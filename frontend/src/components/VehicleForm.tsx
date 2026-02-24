@@ -47,7 +47,9 @@ export default function VehicleForm({ onSubmit }: Props) {
 
   // 제작사 목록 로드
   useEffect(() => {
-    getMakers().then(setMakers).catch(() => {});
+    getMakers()
+      .then(setMakers)
+      .catch((err) => console.error("[CarFarm] 제작사 로드 실패:", err));
   }, []);
 
   // 모델 목록 로드

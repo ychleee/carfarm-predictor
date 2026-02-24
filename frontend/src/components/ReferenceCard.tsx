@@ -1,63 +1,71 @@
-import type { ReferenceVehicle } from "../types";
+import type { ReferenceVehicle, CalculateResponse } from "../types";
+
+export interface CalcState {
+  status: "idle" | "loading" | "done" | "error";
+  data?: CalculateResponse;
+  error?: string;
+}
 
 interface Props {
   reference: ReferenceVehicle;
   index: number;
-  loading: boolean;
-  onSelect: () => void;
+  calcState: CalcState;
+  onCalc: () => void;
+  onClick: () => void;
+  onDelete: () => void;
 }
 
 export default function ReferenceCard({
   reference,
   index,
-  loading,
-  onSelect,
+  calcState,
+  onCalc,
+  onClick,
+  onDelete,
 }: Props) {
   const r = reference;
 
-  // 옵션 요약 (처음 4개만)
-  const optionList = r.options?.split(",").map((o) => o.trim()) ?? [];
-  const displayOptions = optionList.slice(0, 4);
+  const optionList = r.options?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+  const displayOptions = optionList.slice(0, 5);
   const moreCount = optionList.length - displayOptions.length;
+
+  const hasPriceResult = calcState.status === "done" && calcState.data;
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
-      {/* 헤더 */}
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded">
+      {/* 헤더: 번호 + 차명 + 삭제 */}
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-start gap-2 min-w-0">
+          <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded shrink-0">
             #{index + 1}
           </span>
-          <h4 className="text-sm font-semibold text-gray-900 line-clamp-1">
+          <h4 className="text-sm font-semibold text-gray-900">
             {r.vehicle_name ?? `차량 ${r.auction_id}`}
           </h4>
         </div>
-        <span className="text-lg font-bold text-blue-600 whitespace-nowrap">
-          {r.auction_price?.toLocaleString()}만원
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="text-gray-300 hover:text-red-500 text-lg leading-none shrink-0 transition-colors"
+          title="삭제"
+        >
+          &times;
+        </button>
+      </div>
+
+      {/* 스펙 한 줄 */}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 mb-2">
+        <span>{r.year}년</span>
+        <span>{r.mileage?.toLocaleString()}km</span>
+        {r.color && <span>{r.color}</span>}
+        <span className="font-medium text-blue-600">
+          낙찰 {r.auction_price?.toLocaleString()}만원
         </span>
+        {r.auction_date && <span>{r.auction_date}</span>}
       </div>
 
-      {/* 스펙 정보 */}
-      <div className="grid grid-cols-3 gap-2 mb-3 text-xs text-gray-500">
-        <div>
-          <span className="text-gray-400">연식</span>
-          <p className="text-gray-800 font-medium">{r.year}년</p>
-        </div>
-        <div>
-          <span className="text-gray-400">주행거리</span>
-          <p className="text-gray-800 font-medium">
-            {r.mileage?.toLocaleString()}km
-          </p>
-        </div>
-        <div>
-          <span className="text-gray-400">색상</span>
-          <p className="text-gray-800 font-medium">{r.color ?? "-"}</p>
-        </div>
-      </div>
-
-      {/* 옵션 */}
+      {/* 옵션 태그 */}
       {displayOptions.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
+        <div className="flex flex-wrap gap-1 mb-2">
           {displayOptions.map((opt) => (
             <span
               key={opt}
@@ -72,7 +80,7 @@ export default function ReferenceCard({
         </div>
       )}
 
-      {/* 선택 이유 — 핵심! */}
+      {/* 선택 이유 */}
       <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-3">
         <p className="text-xs font-medium text-blue-700 mb-1">선택 이유</p>
         <p className="text-sm text-blue-900 leading-relaxed">
@@ -80,14 +88,60 @@ export default function ReferenceCard({
         </p>
       </div>
 
-      {/* 선택 버튼 */}
-      <button
-        onClick={onSelect}
-        disabled={loading}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white text-sm font-medium py-2 rounded-lg transition-colors"
-      >
-        {loading ? "산출 중..." : "이 차량으로 가격 산출"}
-      </button>
+      {/* 가격 산출 영역 */}
+      <div className="flex items-center gap-3">
+        {calcState.status === "idle" && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onCalc(); }}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors"
+          >
+            가격 산출
+          </button>
+        )}
+
+        {calcState.status === "loading" && (
+          <span className="flex items-center gap-2 text-sm text-blue-600">
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            산출 중...
+          </span>
+        )}
+
+        {calcState.status === "error" && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-red-600">{calcState.error}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onCalc(); }}
+              className="text-sm text-blue-600 hover:underline"
+            >
+              재시도
+            </button>
+          </div>
+        )}
+
+        {hasPriceResult && (
+          <button
+            onClick={onClick}
+            className="flex items-center gap-3 bg-green-50 border border-green-200 hover:bg-green-100 rounded-lg px-4 py-2 transition-colors"
+          >
+            <div className="text-left">
+              <span className="text-xs text-gray-500">추정 소매가</span>
+              <p className="text-sm font-bold text-gray-800">
+                {calcState.data!.estimated_retail.toLocaleString()}만원
+              </p>
+            </div>
+            <div className="text-left">
+              <span className="text-xs text-gray-500">예상 낙찰가</span>
+              <p className="text-sm font-bold text-blue-700">
+                {calcState.data!.estimated_auction.toLocaleString()}만원
+              </p>
+            </div>
+            <span className="text-xs text-gray-400 ml-1">상세 &rsaquo;</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

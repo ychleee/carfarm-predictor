@@ -9,6 +9,7 @@ interface Props {
   target: TargetVehicle;
   reference: ReferenceVehicle;
   data: CalculateResponse;
+  onBack: () => void;
   onReset: () => void;
 }
 
@@ -22,6 +23,7 @@ export default function PriceCalculation({
   target,
   reference,
   data,
+  onBack,
   onReset,
 }: Props) {
   const confClass = CONFIDENCE_COLORS[data.confidence] ?? "bg-gray-100 text-gray-800";
@@ -97,6 +99,12 @@ export default function PriceCalculation({
 
       {/* 액션 버튼 */}
       <div className="flex gap-3">
+        <button
+          onClick={onBack}
+          className="flex-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors text-sm"
+        >
+          다른 기준차량 선택
+        </button>
         <button
           onClick={onReset}
           className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors text-sm"

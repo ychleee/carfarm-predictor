@@ -4,11 +4,20 @@ frontend/
 # 원본 데이터
 경매데이터/
 
-# 불필요한 대용량 파일
+# car_price_prediction: output 중 필요한 CSV/JSON만 업로드
+car_price_prediction/*.py
+car_price_prediction/*.md
+car_price_prediction/*.txt
+car_price_prediction/catboost_info/
+car_price_prediction/data/
 car_price_prediction/output/*.joblib
 car_price_prediction/output/*.joblib.backup
 car_price_prediction/output/*.pkl
-car_price_prediction/data/
+car_price_prediction/output/cleaned_auction_data.csv
+car_price_prediction/output/parsed_vehicles.csv
+car_price_prediction/output/feature_importance.csv
+car_price_prediction/output/model_comparison_results.csv
+car_price_prediction/output/price_correction.json
 
 # 문서
 *.docx
@@ -38,3 +47,7 @@ node_modules/
 
 # Misc
 *.log
+/model_comparison_results.csv
+project_doc/
+fewshotexamples*.md
+.firebase/

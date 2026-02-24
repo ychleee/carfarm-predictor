@@ -287,6 +287,7 @@ class RecommendationResult:
 
 def recommend_references(
     target: dict,
+    exclude_ids: list[str] | None = None,
     max_iterations: int = 10,
     model: str = "claude-sonnet-4-20250514",
 ) -> RecommendationResult:
@@ -311,7 +312,7 @@ def recommend_references(
     result = RecommendationResult()
 
     # 사용자 메시지 구성
-    user_message = _build_user_message(target)
+    user_message = _build_user_message(target, exclude_ids=exclude_ids)
 
     messages = [{"role": "user", "content": user_message}]
 
@@ -370,10 +371,29 @@ def recommend_references(
             result.reasoning = f"예상치 못한 종료: {response.stop_reason}"
             break
 
+    # max_iterations 도달 시 최종 답변 요청
+    if not result.recommendations:
+        messages.append({
+            "role": "user",
+            "content": "도구 호출 한도에 도달했습니다. 지금까지의 검색 결과를 바탕으로 최종 추천 JSON을 반환해주세요.",
+        })
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+        )
+        result.total_input_tokens += response.usage.input_tokens
+        result.total_output_tokens += response.usage.output_tokens
+        final_text = _extract_text(response)
+        parsed = _parse_llm_response(final_text)
+        result.recommendations = parsed.get("recommendations", [])
+        result.reasoning = parsed.get("reasoning", final_text)
+
     return result
 
 
-def _build_user_message(target: dict) -> str:
+def _build_user_message(target: dict, exclude_ids: list[str] | None = None) -> str:
     """대상차량 정보를 사용자 메시지로 구성"""
     lines = ["아래 대상차량에 대한 기준차량 3건을 추천해주세요.", ""]
     lines.append("## 대상차량 정보")
@@ -408,6 +428,13 @@ def _build_user_message(target: dict) -> str:
     lines.append("위 차량과 가장 비교하기 좋은 기준차량 3건을 DB에서 찾아주세요.")
     lines.append("모델+트림이 동일하고 연식이 가까운 것을 최우선으로 하되,")
     lines.append("옵션 구성이 조금씩 다른 차량을 섞어서 옵션 가치를 교차검증할 수 있게 해주세요.")
+
+    if exclude_ids:
+        lines.append("")
+        lines.append("## 제외할 차량")
+        lines.append("아래 auction_id 차량은 이미 추천되어 있으므로 **반드시 제외**하세요:")
+        for aid in exclude_ids:
+            lines.append(f"- {aid}")
 
     return "\n".join(lines)
 

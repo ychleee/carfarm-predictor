@@ -33,6 +33,7 @@ class TargetVehicle(BaseModel):
     options: list[str] = []       # 옵션 목록
     exchange_count: int = 0       # 교환 부위 수
     bodywork_count: int = 0       # 판금 부위 수
+    exclude_auction_ids: list[str] = []  # 제외할 차량 ID (추가 추천 시)
 
 
 class ReferenceVehicle(BaseModel):
@@ -66,7 +67,9 @@ async def recommend_reference_vehicles(target: TargetVehicle):
     """
     try:
         # LLM 추천 실행
-        result = recommend_references(target.model_dump())
+        exclude_ids = target.exclude_auction_ids
+        target_dict = target.model_dump(exclude={"exclude_auction_ids"})
+        result = recommend_references(target_dict, exclude_ids=exclude_ids)
 
         # 추천된 차량의 상세 정보 조회
         recommendations = []
