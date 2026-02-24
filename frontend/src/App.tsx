@@ -1,35 +1,84 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState } from "react";
+import type {
+  TargetVehicle,
+  RecommendResponse,
+  ReferenceVehicle,
+  CalculateResponse,
+} from "./types";
+import StepIndicator from "./components/StepIndicator";
+import VehicleForm from "./components/VehicleForm";
+import RecommendationResult from "./components/RecommendationResult";
+import PriceCalculation from "./components/PriceCalculation";
 
-function App() {
-  const [count, setCount] = useState(0)
+type Step = "input" | "recommend" | "calculate";
+
+export default function App() {
+  const [step, setStep] = useState<Step>("input");
+
+  // 각 단계 데이터
+  const [target, setTarget] = useState<TargetVehicle | null>(null);
+  const [recommendData, setRecommendData] =
+    useState<RecommendResponse | null>(null);
+  const [selectedRef, setSelectedRef] = useState<ReferenceVehicle | null>(null);
+  const [calcData, setCalcData] = useState<CalculateResponse | null>(null);
+
+  // Step 1 → Step 2
+  const handleRecommend = (t: TargetVehicle, data: RecommendResponse) => {
+    setTarget(t);
+    setRecommendData(data);
+    setStep("recommend");
+  };
+
+  // Step 2 → Step 3
+  const handleSelectRef = (ref: ReferenceVehicle, calc: CalculateResponse) => {
+    setSelectedRef(ref);
+    setCalcData(calc);
+    setStep("calculate");
+  };
+
+  // 처음으로
+  const handleReset = () => {
+    setStep("input");
+    setTarget(null);
+    setRecommendData(null);
+    setSelectedRef(null);
+    setCalcData(null);
+  };
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-5xl mx-auto px-4 py-8">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">
+          CarFarm v2
+        </h1>
+        <p className="text-gray-500 mb-6 text-sm">
+          기준차량 기반 경매 가격 산출 시스템
         </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
-}
 
-export default App
+        <StepIndicator current={step} />
+
+        {step === "input" && (
+          <VehicleForm onSubmit={handleRecommend} />
+        )}
+
+        {step === "recommend" && recommendData && target && (
+          <RecommendationResult
+            target={target}
+            data={recommendData}
+            onSelect={handleSelectRef}
+            onBack={handleReset}
+          />
+        )}
+
+        {step === "calculate" && calcData && selectedRef && target && (
+          <PriceCalculation
+            target={target}
+            reference={selectedRef}
+            data={calcData}
+            onReset={handleReset}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
