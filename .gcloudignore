@@ -1,0 +1,40 @@
+# Frontend (Docker에서 사용하지 않음)
+frontend/
+
+# 원본 데이터
+경매데이터/
+
+# 불필요한 대용량 파일
+car_price_prediction/output/*.joblib
+car_price_prediction/output/*.joblib.backup
+car_price_prediction/output/*.pkl
+car_price_prediction/data/
+
+# 문서
+*.docx
+*.pdf
+*.xlsx
+*.xls
+
+# Git/IDE
+.git/
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Node
+node_modules/
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# Misc
+*.log

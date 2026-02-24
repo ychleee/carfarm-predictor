@@ -2,6 +2,7 @@
 CarFarm v2 — FastAPI Backend
 기준차량 기반 가격 산출 시스템
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,10 +14,19 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# CORS 설정 (React 개발 서버 허용)
+# CORS 설정
+_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:3000",
+]
+# 프로덕션 Firebase Hosting URL 추가
+if os.environ.get("FRONTEND_URL"):
+    _origins.append(os.environ["FRONTEND_URL"])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
