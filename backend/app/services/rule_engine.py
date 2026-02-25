@@ -26,6 +26,33 @@ from dataclasses import dataclass, field
 
 
 # =========================================================================
+# 색상 정규화
+# =========================================================================
+
+COLOR_NORMALIZE: dict[str, str] = {
+    # 한국어 → 정규화 그룹
+    "흰색": "white", "백색": "white", "화이트": "white", "아이보리": "white",
+    "크림": "white", "진주": "white", "펄화이트": "white", "미색": "cream",
+    "검정": "black", "검정색": "black", "블랙": "black",
+    "은색": "silver", "실버": "silver", "은회색": "silver",
+    "회색": "gray", "메탈": "gray", "그레이": "gray", "건메탈": "gray",
+    "다크그레이": "gray", "티탄": "gray", "쥐색": "gray",
+    "빨강": "other", "파랑": "other", "파란색": "other", "노랑": "other",
+    "갈색": "other", "베이지": "other", "브라운": "other",
+    # 영문 passthrough
+    "white": "white", "black": "black", "silver": "silver",
+    "gray": "gray", "cream": "cream", "other": "other",
+}
+
+
+def normalize_color(color: str) -> str:
+    """색상 문자열을 정규화 그룹으로 변환 (white/black/silver/gray/cream/other)"""
+    if not color:
+        return "other"
+    return COLOR_NORMALIZE.get(color.strip(), "other")
+
+
+# =========================================================================
 # 데이터 모델
 # =========================================================================
 
@@ -142,11 +169,20 @@ class RuleEngine:
         step = self._adjust_options(target, reference)
         result.adjustments.append(step)
 
+        # ── 룰 7: 연식 차이 보정 ──
+        step = self._adjust_year_diff(target, reference, base_price)
+        result.adjustments.append(step)
+
+        # ── 룰 8: 트림 차이 경고 ──
+        trim_warning = self._warn_trim_diff(target, reference)
+        if trim_warning:
+            result.adjustments.append(trim_warning)
+
         # 총 보정액
         result.total_adjustment = sum(s.amount for s in result.adjustments)
 
         # 최종 가격 산출
-        result = self._calculate_final_price(target, result)
+        result = self._calculate_final_price(target, result, has_trim_warning=trim_warning is not None)
 
         return result
 
@@ -511,12 +547,24 @@ class RuleEngine:
                     f"{'있음' if r_has else '없음'} → {diff:+.0f}만원"
                 )
 
-        amount = target_total - ref_total
+        raw_amount = target_total - ref_total
+
+        # 연식 가중치 — 오래된 차량일수록 옵션 가치 감소
+        age = 2026 - target.year
+        weight = 1.0
+        color_rules = self.rules.get('color_adjustment', {})
+        for w in color_rules.get('age_weight', []):
+            if age <= w['max_age']:
+                weight = w['weight']
+                break
+
+        amount = raw_amount * weight
 
         if abs(amount) < 1:
             desc = "옵션 차이 없음"
         else:
-            desc = f"선호옵션 {'가산' if amount > 0 else '감가'} (1개당 50만원)"
+            weight_note = f", 연식가중치 {weight}" if weight < 1.0 else ""
+            desc = f"선호옵션 {'가산' if amount > 0 else '감가'} (1개당 50만원{weight_note})"
 
         return AdjustmentStep(
             rule_name="선호옵션 보정",
@@ -527,8 +575,120 @@ class RuleEngine:
                 f"대상: {target_total:.0f}만원\n"
                 f"기준: {ref_total:.0f}만원\n"
                 + ("\n".join(detail_lines) if detail_lines else "  차이 없음")
+                + (f"\n연식가중치: {weight} (차령 {age}년)" if weight < 1.0 else "")
             ),
-            data_source="업계 룰: 선호옵션 1개당 50만원",
+            data_source="업계 룰: 선호옵션 1개당 50만원 × 연식가중치",
+        )
+
+    # -----------------------------------------------------------------
+    # 룰 7: 연식 차이 보정
+    # -----------------------------------------------------------------
+
+    def _adjust_year_diff(self, target: Vehicle, reference: Vehicle,
+                          base_price: float) -> AdjustmentStep:
+        """
+        연식 차이에 따른 보정.
+
+        업계 룰: 연당 2% (낙찰가 기준)
+        대상이 기준보다 오래되면 감가, 새로우면 가산.
+        """
+        year_rules = self.rules.get('year_adjustment', {})
+        rate = year_rules.get('rate_per_year', 0.02)
+
+        diff = target.year - reference.year  # 양수 = 대상이 더 새로움
+
+        if diff == 0:
+            return AdjustmentStep(
+                rule_name="연식 보정",
+                rule_id="year_diff",
+                description="연식 동일",
+                amount=0,
+                details=f"대상: {target.year}년식, 기준: {reference.year}년식",
+            )
+
+        amount = diff * rate * base_price
+
+        return AdjustmentStep(
+            rule_name="연식 보정",
+            rule_id="year_diff",
+            description=f"연식 {abs(diff)}년 {'가산' if diff > 0 else '감가'} (연당 {rate*100:.0f}%)",
+            amount=round(amount, 1),
+            details=(
+                f"대상: {target.year}년식, 기준: {reference.year}년식\n"
+                f"차이: {diff:+d}년\n"
+                f"계산: {abs(diff)}년 × {rate*100:.0f}% × {base_price:.0f}만원 = {abs(amount):.1f}만원"
+            ),
+            data_source=f"업계 룰: 연식 차이 연당 {rate*100:.0f}%",
+        )
+
+    # -----------------------------------------------------------------
+    # 룰 8: 트림 차이 경고
+    # -----------------------------------------------------------------
+
+    def _warn_trim_diff(self, target: Vehicle, reference: Vehicle) -> AdjustmentStep | None:
+        """
+        트림이 다를 때 경고를 반환.
+
+        가격 보정은 하지 않지만, 신뢰도를 낮추는 데 사용.
+        - 둘 다 트림 정보 없음 → 경고 안 함
+        - 둘 다 있고 동일 → 경고 안 함
+        - 한쪽만 없거나, 둘 다 있는데 다름 → 경고
+        """
+        t_trim = target.trim.strip() if target.trim else ""
+        r_trim = reference.trim.strip() if reference.trim else ""
+
+        # 둘 다 트림 정보가 없으면 비교 불가 → 경고 안 함
+        if not t_trim and not r_trim:
+            return None
+
+        # 동일하면 경고 안 함
+        if t_trim == r_trim:
+            return None
+
+        # 한쪽만 트림 정보 없는 경우
+        if not r_trim:
+            return AdjustmentStep(
+                rule_name="⚠ 트림 차이 경고",
+                rule_id="trim_warning",
+                description=f"기준차량 트림 정보 없음 (대상: {t_trim})",
+                amount=0,
+                details=(
+                    f"대상 트림: {t_trim}\n"
+                    f"기준 트림: (정보 없음)\n"
+                    f"기준차량의 트림 정보가 없어 트림 일치 여부를 확인할 수 없습니다.\n"
+                    f"이 산출 결과의 신뢰도는 '낮음'으로 조정됩니다."
+                ),
+                data_source="기준차량 트림 정보 부재 → 경고 표시",
+            )
+
+        if not t_trim:
+            return AdjustmentStep(
+                rule_name="⚠ 트림 차이 경고",
+                rule_id="trim_warning",
+                description=f"대상차량 트림 미입력 (기준: {r_trim})",
+                amount=0,
+                details=(
+                    f"대상 트림: (미입력)\n"
+                    f"기준 트림: {r_trim}\n"
+                    f"대상차량의 트림이 입력되지 않아 트림 일치 여부를 확인할 수 없습니다.\n"
+                    f"이 산출 결과의 신뢰도는 '낮음'으로 조정됩니다."
+                ),
+                data_source="대상차량 트림 미입력 → 경고 표시",
+            )
+
+        # 둘 다 있는데 다른 경우
+        return AdjustmentStep(
+            rule_name="⚠ 트림 차이 경고",
+            rule_id="trim_warning",
+            description=f"트림이 다릅니다: {t_trim} vs {r_trim}",
+            amount=0,
+            details=(
+                f"대상 트림: {t_trim}\n"
+                f"기준 트림: {r_trim}\n"
+                f"트림이 다르면 가격 차이가 클 수 있습니다.\n"
+                f"이 산출 결과의 신뢰도는 '낮음'으로 조정됩니다."
+            ),
+            data_source="트림 차이에 의한 가격 변동은 정형화 불가 → 경고만 표시",
         )
 
     # -----------------------------------------------------------------
@@ -536,7 +696,8 @@ class RuleEngine:
     # -----------------------------------------------------------------
 
     def _calculate_final_price(self, target: Vehicle,
-                               result: PriceResult) -> PriceResult:
+                               result: PriceResult,
+                               has_trim_warning: bool = False) -> PriceResult:
         """
         최종 가격 산출.
 
@@ -566,13 +727,16 @@ class RuleEngine:
         result.estimated_retail = round(estimated_retail, 1)
 
         # 신뢰도 판단
-        non_zero = sum(1 for s in result.adjustments if abs(s.amount) > 0)
-        if non_zero <= 1:
-            result.confidence = "높음"
-        elif non_zero <= 3:
-            result.confidence = "보통"
-        else:
+        if has_trim_warning:
             result.confidence = "낮음"
+        else:
+            non_zero = sum(1 for s in result.adjustments if abs(s.amount) > 0)
+            if non_zero <= 1:
+                result.confidence = "높음"
+            elif non_zero <= 3:
+                result.confidence = "보통"
+            else:
+                result.confidence = "낮음"
 
         # 요약
         result.summary = (
@@ -625,7 +789,17 @@ class RuleEngine:
             {
                 "id": "options",
                 "name": "선호옵션 (선스네후)",
-                "description": "선루프/스마트키/네비/후방카메라, 1개당 50만원",
+                "description": "선루프/스마트키/네비/후방카메라, 1개당 50만원 × 연식가중치",
+            },
+            {
+                "id": "year_diff",
+                "name": "연식 보정",
+                "description": "연식 차이별 보정: 연당 2%",
+            },
+            {
+                "id": "trim_warning",
+                "name": "트림 차이 경고",
+                "description": "기준차량과 트림이 다를 때 경고 표시 (가격 보정 없음, 신뢰도 하향)",
             },
         ]
 
@@ -659,6 +833,13 @@ def calculate_price(target: dict, reference: dict) -> dict:
     engine = get_engine()
     t = Vehicle(**{k: v for k, v in target.items() if k in Vehicle.__dataclass_fields__})
     r = Vehicle(**{k: v for k, v in reference.items() if k in Vehicle.__dataclass_fields__})
+
+    # 색상 정규화 — target은 "흰색" 같은 한국어, reference는 이미 color_group일 수 있음
+    if t.color and not t.color_group:
+        t.color_group = normalize_color(t.color)
+    if r.color and not r.color_group:
+        r.color_group = normalize_color(r.color)
+
     result = engine.calculate(t, r)
 
     return {

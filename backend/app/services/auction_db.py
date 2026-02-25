@@ -20,7 +20,21 @@ from pathlib import Path
 from functools import lru_cache
 
 
-DATA_PATH = Path(__file__).parent.parent.parent.parent / "car_price_prediction" / "output"
+def _resolve_data_root() -> Path:
+    """프로젝트 데이터 루트 경로를 결정 (로컬/Docker 모두 지원)"""
+    import os
+    env = os.environ.get("CARFARM_DATA_ROOT")
+    if env:
+        return Path(env)
+    local = Path(__file__).parent.parent.parent.parent / "car_price_prediction" / "output"
+    if local.exists():
+        return local
+    docker = Path("/app/car_price_prediction/output")
+    if docker.exists():
+        return docker
+    return local
+
+DATA_PATH = _resolve_data_root()
 
 # 한글 혼용 표기 정규화 (ㅓ↔ㅕ, ㅐ↔ㅔ 등)
 _NORMALIZE_MAP = {

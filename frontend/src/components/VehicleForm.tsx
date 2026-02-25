@@ -4,10 +4,11 @@ import {
   getMakers,
   getModels,
   getGenerations,
+  getVariants,
   getTrims,
   recommendReferences,
 } from "../api/client";
-import type { ModelInfo, GenerationInfo } from "../types";
+import type { ModelInfo, GenerationInfo, VariantInfo } from "../types";
 
 const COLOR_OPTIONS = ["흰색", "검정", "은색", "메탈", "기타"];
 const USAGE_OPTIONS = [
@@ -25,16 +26,19 @@ export default function VehicleForm({ onSubmit }: Props) {
   const [makers, setMakers] = useState<string[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [generations, setGenerations] = useState<GenerationInfo[]>([]);
+  const [variants, setVariants] = useState<VariantInfo[]>([]);
   const [trims, setTrims] = useState<string[]>([]);
 
   // 폼 데이터
   const [maker, setMaker] = useState("");
   const [model, setModel] = useState("");
   const [generation, setGeneration] = useState("");
+  const [variantKey, setVariantKey] = useState("");
   const [trim, setTrim] = useState("");
   const [year, setYear] = useState<number>(2022);
   const [mileage, setMileage] = useState<number>(50000);
   const [fuel, setFuel] = useState("");
+  const [displacement, setDisplacement] = useState("");
   const [color, setColor] = useState("");
   const [usage, setUsage] = useState("personal");
   const [options, setOptions] = useState<string[]>([]);
@@ -60,6 +64,7 @@ export default function VehicleForm({ onSubmit }: Props) {
     }
     setModel("");
     setGeneration("");
+    setVariantKey("");
     setTrim("");
     getModels(maker).then(setModels).catch(() => {});
   }, [maker]);
@@ -71,9 +76,32 @@ export default function VehicleForm({ onSubmit }: Props) {
       return;
     }
     setGeneration("");
+    setVariantKey("");
     setTrim("");
     getGenerations(maker, model).then(setGenerations).catch(() => {});
   }, [maker, model]);
+
+  // 변형 목록 로드 + 자동 선택
+  useEffect(() => {
+    if (!maker || !model || !generation) {
+      setVariants([]);
+      setVariantKey("");
+      setTrim("");
+      return;
+    }
+    setVariantKey("");
+    setTrim("");
+    getVariants(maker, model, generation).then((v) => {
+      setVariants(v);
+      // variant가 1개면 자동 선택
+      if (v.length === 1) {
+        setVariantKey(v[0].variant_key);
+        // 연료/배기량 자동 세팅
+        if (v[0].fuel) setFuel(v[0].fuel);
+        if (v[0].displacement) setDisplacement(v[0].displacement);
+      }
+    }).catch(() => {});
+  }, [maker, model, generation]);
 
   // 트림 목록 로드
   useEffect(() => {
@@ -82,8 +110,20 @@ export default function VehicleForm({ onSubmit }: Props) {
       return;
     }
     setTrim("");
-    getTrims(maker, model, generation).then(setTrims).catch(() => {});
-  }, [maker, model, generation]);
+    // variant가 선택되었으면 해당 variant의 트림만, 아니면 전체 트림
+    const vk = variantKey || undefined;
+    getTrims(maker, model, generation, vk).then(setTrims).catch(() => {});
+  }, [maker, model, generation, variantKey]);
+
+  // variant 선택 시 연료/배기량 자동 세팅
+  const handleVariantChange = (vk: string) => {
+    setVariantKey(vk);
+    const v = variants.find((v) => v.variant_key === vk);
+    if (v) {
+      if (v.fuel) setFuel(v.fuel);
+      if (v.displacement) setDisplacement(v.displacement);
+    }
+  };
 
   const toggleOption = (opt: string) => {
     setOptions((prev) =>
@@ -104,6 +144,7 @@ export default function VehicleForm({ onSubmit }: Props) {
       year,
       mileage,
       fuel: fuel || undefined,
+      displacement: displacement || undefined,
       trim: trim || undefined,
       color: color || undefined,
       usage: usage || undefined,
@@ -116,10 +157,7 @@ export default function VehicleForm({ onSubmit }: Props) {
     setError(null);
     setLoading(true);
     try {
-      console.log("[CarFarm] 추천 요청:", JSON.stringify(target));
       const data = await recommendReferences(target);
-      console.log("[CarFarm] 추천 응답:", JSON.stringify(data).slice(0, 500));
-      console.log("[CarFarm] 추천 건수:", data.recommendations?.length);
       if (!data.recommendations || data.recommendations.length === 0) {
         setError(`추천 결과가 없습니다. 추론: ${data.reasoning?.slice(0, 200) ?? "없음"}`);
         return;
@@ -137,6 +175,9 @@ export default function VehicleForm({ onSubmit }: Props) {
     "w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
   const labelClass = "block text-sm font-medium text-gray-700 mb-1";
 
+  // variant가 1개뿐이면 드롭다운 숨김
+  const showVariants = variants.length > 1;
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">
@@ -144,7 +185,7 @@ export default function VehicleForm({ onSubmit }: Props) {
       </h2>
 
       {/* 차량 선택 (캐스케이딩) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div>
           <label className={labelClass}>제작사 *</label>
           <select
@@ -184,7 +225,7 @@ export default function VehicleForm({ onSubmit }: Props) {
           >
             <option value="">전체</option>
             {generations.map((g) => (
-              <option key={g.generation} value={g.generation}>{g.generation}</option>
+              <option key={g.generation} value={g.generation}>{g.display_name}</option>
             ))}
           </select>
         </div>
@@ -204,6 +245,40 @@ export default function VehicleForm({ onSubmit }: Props) {
           </select>
         </div>
       </div>
+
+      {/* 변형 선택 (variant가 2개 이상일 때만 표시) */}
+      {showVariants && (
+        <div className="mb-4">
+          <label className={labelClass}>연료/배기량 (세부 변형)</label>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => { setVariantKey(""); setFuel(""); setDisplacement(""); }}
+              className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                !variantKey
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
+              }`}
+            >
+              전체
+            </button>
+            {variants.map((v) => (
+              <button
+                key={v.variant_key}
+                type="button"
+                onClick={() => handleVariantChange(v.variant_key)}
+                className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                  variantKey === v.variant_key
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
+                }`}
+              >
+                {v.label} <span className="text-xs opacity-70">({v.trim_count})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 기본 정보 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">

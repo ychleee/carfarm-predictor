@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   TargetVehicle,
   ReferenceVehicle,
@@ -10,6 +11,7 @@ interface Props {
   reference: ReferenceVehicle;
   data: CalculateResponse;
   onClose: () => void;
+  onPriceFeedback?: (type: string, comment: string) => void;
 }
 
 const CONFIDENCE_COLORS: Record<string, string> = {
@@ -18,14 +20,31 @@ const CONFIDENCE_COLORS: Record<string, string> = {
   낮음: "bg-red-100 text-red-800",
 };
 
+const PRICE_FEEDBACK_OPTIONS = [
+  { value: "price_ok", label: "적절", color: "bg-green-600 hover:bg-green-700 text-white" },
+  { value: "price_high", label: "높음", color: "bg-orange-500 hover:bg-orange-600 text-white" },
+  { value: "price_low", label: "낮음", color: "bg-blue-500 hover:bg-blue-600 text-white" },
+  { value: "wrong_recommendation", label: "추천 부적절", color: "bg-red-600 hover:bg-red-700 text-white" },
+];
+
 export default function PriceDetailModal({
   target,
   reference,
   data,
   onClose,
+  onPriceFeedback,
 }: Props) {
   const confClass =
     CONFIDENCE_COLORS[data.confidence] ?? "bg-gray-100 text-gray-800";
+
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const [comment, setComment] = useState("");
+
+  const handleFeedback = (type: string) => {
+    if (!onPriceFeedback) return;
+    onPriceFeedback(type, comment);
+    setFeedbackSent(true);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -119,6 +138,41 @@ export default function PriceDetailModal({
               {data.summary}
             </p>
           </div>
+
+          {/* 가격 평가 피드백 */}
+          {onPriceFeedback && (
+            <div className="mb-4 border border-gray-200 rounded-xl p-4">
+              {feedbackSent ? (
+                <div className="text-center text-sm text-green-700 bg-green-50 rounded-lg py-3">
+                  피드백이 저장되었습니다
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-gray-700 mb-2">
+                    이 산출 가격이 적절한가요?
+                  </p>
+                  <textarea
+                    value={comment}
+                    onChange={(e) => setComment(e.target.value)}
+                    placeholder="(선택) 보정이 잘못된 부분, 적정 가격 의견 등"
+                    rows={2}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none mb-3"
+                  />
+                  <div className="flex gap-2">
+                    {PRICE_FEEDBACK_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => handleFeedback(opt.value)}
+                        className={`flex-1 font-medium py-2 px-3 rounded-lg transition-colors text-sm ${opt.color}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* 닫기 */}
           <button

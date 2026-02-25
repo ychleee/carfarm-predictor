@@ -25,6 +25,7 @@ class TargetVehicle(BaseModel):
     year: int                     # 연식
     mileage: int                  # 주행거리 (km)
     fuel: str | None = None       # 연료
+    displacement: str | None = None  # 배기량 (예: "2.0", "1.6")
     drive: str | None = None      # 구동방식
     trim: str | None = None       # 트림
     color: str | None = None      # 색상
@@ -47,6 +48,8 @@ class ReferenceVehicle(BaseModel):
     color: str | None = None
     options: str | None = None
     usage_type: str | None = None
+    is_export: bool = False       # 내수(False) / 수출(True)
+    trim: str | None = None       # 트림
     similarity_reason: str        # LLM이 설명하는 선택 이유
 
 
@@ -90,6 +93,8 @@ async def recommend_reference_vehicles(target: TargetVehicle):
                 color=detail.get("색상") if detail else None,
                 options=detail.get("옵션") if detail else None,
                 usage_type=detail.get("usage_type") if detail else None,
+                is_export=bool(detail.get("is_export", 0)) if detail else False,
+                trim=detail.get("trim") if detail else None,
                 similarity_reason=reason,
             )
             recommendations.append(ref)

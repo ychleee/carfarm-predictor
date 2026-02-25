@@ -67,20 +67,10 @@ export default function RecommendationResult({
     }
   };
 
-  const handleDeleteConfirm = async (comment: string) => {
+  const handleDeleteConfirm = () => {
     if (!deleteTarget) return;
-    const ref = deleteTarget;
-    setCards((prev) => prev.filter((c) => c.auction_id !== ref.auction_id));
+    setCards((prev) => prev.filter((c) => c.auction_id !== deleteTarget.auction_id));
     setDeleteTarget(null);
-    submitFeedback({
-      target_vehicle: target,
-      selected_reference_id: ref.auction_id,
-      recommended_references: cards.map((c) => c.auction_id),
-      estimated_price: null,
-      actual_price: null,
-      feedback_type: "wrong_recommendation",
-      comment,
-    }).catch(() => {});
   };
 
   const handleLoadMore = async () => {
@@ -177,20 +167,35 @@ export default function RecommendationResult({
       {/* 삭제 모달 */}
       {deleteTarget && (
         <DeleteModal
-          target={target}
           reference={deleteTarget}
           onConfirm={handleDeleteConfirm}
           onCancel={() => setDeleteTarget(null)}
         />
       )}
 
-      {/* 가격 상세 모달 */}
+      {/* 가격 상세 모달 (피드백 포함) */}
       {detailTarget && (
         <PriceDetailModal
           target={target}
           reference={detailTarget.ref}
           data={detailTarget.calc}
           onClose={() => setDetailTarget(null)}
+          onPriceFeedback={(type, comment) => {
+            submitFeedback({
+              target_vehicle: target,
+              selected_reference_id: detailTarget.ref.auction_id,
+              recommended_references: cards.map((c) => c.auction_id),
+              recommendations_detail: cards,
+              llm_reasoning: data.reasoning,
+              tokens_used: data.tokens_used,
+              tool_calls_count: data.tool_calls_count,
+              calculation_result: detailTarget.calc,
+              estimated_price: detailTarget.calc.estimated_retail,
+              actual_price: null,
+              feedback_type: type,
+              comment: comment || null,
+            }).catch(() => {});
+          }}
         />
       )}
     </div>

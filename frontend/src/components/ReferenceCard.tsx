@@ -57,6 +57,10 @@ export default function ReferenceCard({
         <span>{r.year}년</span>
         <span>{r.mileage?.toLocaleString()}km</span>
         {r.color && <span>{r.color}</span>}
+        {r.trim && <span className="font-medium text-gray-700">{r.trim}</span>}
+        <span className={`font-medium px-1.5 py-0.5 rounded ${r.is_export ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
+          {r.is_export ? "수출" : "내수"}
+        </span>
         <span className="font-medium text-blue-600">
           낙찰 {r.auction_price?.toLocaleString()}만원
         </span>

@@ -4,7 +4,7 @@
 from fastapi import APIRouter, Query
 
 from app.services.taxonomy_search import (
-    search_vehicles, get_makers, get_models, get_generations, get_trims,
+    search_vehicles, get_makers, get_models, get_generations, get_variants, get_trims,
 )
 from app.services.auction_db import search_auction_db, get_price_stats
 
@@ -38,10 +38,16 @@ async def list_generations(maker: str, model: str):
     return {"maker": maker, "model": model, "generations": get_generations(maker, model)}
 
 
+@router.get("/variants/{maker}/{model}/{generation}")
+async def list_variants(maker: str, model: str, generation: str):
+    """세대별 변형(연료/배기량) 목록"""
+    return {"variants": get_variants(maker, model, generation)}
+
+
 @router.get("/trims/{maker}/{model}/{generation}")
-async def list_trims(maker: str, model: str, generation: str):
-    """세대별 트림 목록"""
-    return {"trims": get_trims(maker, model, generation)}
+async def list_trims(maker: str, model: str, generation: str, variant_key: str | None = None):
+    """세대별 트림 목록 (variant_key로 필터 가능)"""
+    return {"trims": get_trims(maker, model, generation, variant_key=variant_key)}
 
 
 @router.get("/price-stats/{maker}/{model}")

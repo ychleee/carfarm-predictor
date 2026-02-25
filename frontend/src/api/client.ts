@@ -6,6 +6,7 @@ import type {
   FeedbackRequest,
   ModelInfo,
   GenerationInfo,
+  VariantInfo,
 } from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
@@ -88,13 +89,27 @@ export async function getGenerations(
   return data.generations;
 }
 
-export async function getTrims(
+export async function getVariants(
   maker: string,
   model: string,
   generation: string
-): Promise<string[]> {
-  const data = await request<{ trims: string[] }>(
-    `/trims/${encodeURIComponent(maker)}/${encodeURIComponent(model)}/${encodeURIComponent(generation)}`
+): Promise<VariantInfo[]> {
+  const data = await request<{ variants: VariantInfo[] }>(
+    `/variants/${encodeURIComponent(maker)}/${encodeURIComponent(model)}/${encodeURIComponent(generation)}`
   );
+  return data.variants;
+}
+
+export async function getTrims(
+  maker: string,
+  model: string,
+  generation: string,
+  variantKey?: string
+): Promise<string[]> {
+  let url = `/trims/${encodeURIComponent(maker)}/${encodeURIComponent(model)}/${encodeURIComponent(generation)}`;
+  if (variantKey) {
+    url += `?variant_key=${encodeURIComponent(variantKey)}`;
+  }
+  const data = await request<{ trims: string[] }>(url);
   return data.trims;
 }

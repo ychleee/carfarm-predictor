@@ -13,13 +13,25 @@ FEEDBACK_FILE = Path(__file__).parent.parent.parent / "feedback_data.jsonl"
 
 
 class FeedbackRequest(BaseModel):
-    """피드백 요청"""
+    """피드백 요청 — 전체 맥락 저장 (few-shot 학습 데이터용)"""
+    # 대상차량
     target_vehicle: dict
+
+    # 추천 맥락
     selected_reference_id: str | None = None
-    recommended_references: list[str] = []  # 추천된 기준차 ID 목록
+    recommended_references: list[str] = []          # 기준차 ID 목록 (하위호환)
+    recommendations_detail: list[dict] = []         # 기준차 전체 상세 (vehicle_name, year, mileage, price, similarity_reason 등)
+    llm_reasoning: str | None = None                # LLM 추론 전문
+    tokens_used: dict | None = None                 # {input, output}
+    tool_calls_count: int | None = None
+
+    # 가격 산출 맥락 (산출했을 경우)
+    calculation_result: dict | None = None          # CalculateResponse 전체 (adjustments, estimated_retail 등)
+
+    # 피드백
     estimated_price: float | None = None
     actual_price: float | None = None
-    feedback_type: str          # 적절/높음/낮음/wrong_recommendation
+    feedback_type: str          # wrong_recommendation / price_high / price_low / price_ok
     comment: str | None = None
 
 

@@ -37,9 +37,10 @@ export default function AdjustmentTable({
           {adjustments.map((adj) => {
             const isPositive = adj.amount > 0;
             const isZero = adj.amount === 0;
+            const isWarning = adj.rule_id === "trim_warning";
             return (
-              <tr key={adj.rule_id} className="border-b border-gray-100">
-                <td className="px-4 py-2.5 font-medium text-gray-800">
+              <tr key={adj.rule_id} className={`border-b border-gray-100 ${isWarning ? "bg-amber-50" : ""}`}>
+                <td className={`px-4 py-2.5 font-medium ${isWarning ? "text-amber-700" : "text-gray-800"}`}>
                   {adj.rule_name}
                 </td>
                 <td className="px-4 py-2.5 text-gray-500">{adj.description}</td>
