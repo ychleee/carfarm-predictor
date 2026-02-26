@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query
 from app.services.taxonomy_search import (
     search_vehicles, get_makers, get_models, get_generations, get_variants, get_trims,
 )
-from app.services.auction_db import search_auction_db, get_price_stats
+from app.services.firestore_db import search_auction_db, get_price_stats
 
 router = APIRouter()
 

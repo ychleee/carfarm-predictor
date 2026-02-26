@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import anthropic
 
-from app.services.auction_db import (
+from app.services.firestore_db import (
     search_auction_db,
     get_vehicle_detail,
     get_price_stats,

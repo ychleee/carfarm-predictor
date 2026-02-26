@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.schemas.vehicle import TargetVehicleSchema
 from app.services.rule_engine import calculate_price as engine_calculate
-from app.services.auction_db import get_vehicle_detail
+from app.services.firestore_db import get_vehicle_detail
 
 router = APIRouter()
 

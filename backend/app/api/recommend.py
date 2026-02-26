@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app.schemas.vehicle import TargetVehicleSchema
 from app.services.llm_recommender import recommend_references
-from app.services.auction_db import get_vehicle_detail
+from app.services.firestore_db import get_vehicle_detail
 
 router = APIRouter()
 
