@@ -614,8 +614,8 @@ class RuleEngine:
             description=f"연식 {abs(diff)}년 {'가산' if diff > 0 else '감가'} (연당 {rate*100:.0f}%)",
             amount=round(amount, 1),
             details=(
-                f"대상: {target.year}년식, 기준: {reference.year}년식\n"
-                f"차이: {diff:+d}년\n"
+                f"대상: {int(target.year)}년식, 기준: {int(reference.year)}년식\n"
+                f"차이: {diff:+.0f}년\n"
                 f"계산: {abs(diff)}년 × {rate*100:.0f}% × {base_price:.0f}만원 = {abs(amount):.1f}만원"
             ),
             data_source=f"업계 룰: 연식 차이 연당 {rate*100:.0f}%",
