@@ -34,6 +34,8 @@ class TargetVehicleSchema(BaseModel):
     exchange_count: int = Field(default=0, alias="exchangeCount")
     bodywork_count: int = Field(default=0, alias="bodyworkCount")
     generation: str | None = None
+    base_price: float = Field(default=0, alias="vehicleBasePrice")
+    factory_price: float = Field(default=0, alias="vehicleFactoryPrice")
     exclude_auction_ids: list[str] = Field(
         default_factory=list, alias="excludeAuctionIds"
     )
@@ -97,3 +99,15 @@ class TargetVehicleSchema(BaseModel):
         if v is None:
             return 0
         return int(v) if isinstance(v, str) and v.strip() else (v or 0)
+
+    @field_validator("base_price", "factory_price", mode="before")
+    @classmethod
+    def coerce_price(cls, v):
+        """원 단위 → 만원 변환: "50600000" → 5060.0, 이미 만원이면 그대로"""
+        if not v:
+            return 0
+        try:
+            num = float(str(v).replace(",", ""))
+            return round(num / 10000, 1) if num > 100000 else num
+        except (ValueError, TypeError):
+            return 0

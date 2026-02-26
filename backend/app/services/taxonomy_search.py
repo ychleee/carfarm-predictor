@@ -14,24 +14,30 @@ from functools import lru_cache
 from collections import Counter
 
 
-def _resolve_data_root() -> Path:
-    """프로젝트 데이터 루트 경로를 결정 (로컬/Docker 모두 지원)"""
-    # 1) 환경변수 우선
+def _resolve_taxonomy_path() -> Path:
+    """vehicle_taxonomy.json 경로 결정 (로컬/Docker 모두 지원)"""
     import os
+    # 1) 환경변수 우선
     env = os.environ.get("CARFARM_DATA_ROOT")
     if env:
-        return Path(env)
-    # 2) 로컬 개발: __file__ 기준 4단계 상위
-    local = Path(__file__).parent.parent.parent.parent / "car_price_prediction" / "output"
-    if local.exists():
-        return local
-    # 3) Docker: /app 기준
-    docker = Path("/app/car_price_prediction/output")
+        p = Path(env) / "vehicle_taxonomy.json"
+        if p.exists():
+            return p
+    # 2) backend/data/ (Docker COPY 포함)
+    backend_data = Path(__file__).parent.parent.parent / "data" / "vehicle_taxonomy.json"
+    if backend_data.exists():
+        return backend_data
+    # 3) Docker: /app/data/
+    docker = Path("/app/data/vehicle_taxonomy.json")
     if docker.exists():
         return docker
-    return local  # fallback
+    # 4) 기존 경로 (로컬 개발 호환)
+    legacy = Path(__file__).parent.parent.parent.parent / "car_price_prediction" / "output" / "vehicle_taxonomy.json"
+    if legacy.exists():
+        return legacy
+    return backend_data  # fallback
 
-TAXONOMY_PATH = _resolve_data_root() / "vehicle_taxonomy.json"
+TAXONOMY_PATH = _resolve_taxonomy_path()
 
 
 @lru_cache(maxsize=1)

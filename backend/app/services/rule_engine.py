@@ -10,7 +10,7 @@ CarFarm v2 — 룰 엔진 (Rule Engine)
   3. 판금·도색 보정 — 연식/가격대별 1~2%
   4. 색상 보정 — 선호도별 20만원, 차급별 선호 순서
   5. 렌터카 감가 — 단일 계수
-  6. 선호옵션(선스네후) — 1개당 50만원
+  6. 옵션 보정 — 출고가-기본가 역산 또는 전체 옵션 리스트 비교
   7. 최종 가격 산출 — 소매가 × 경매할인율, 최소 마진 적용
 
 사용법:
@@ -76,6 +76,9 @@ class Vehicle:
     bodywork_count: int = 0        # W판금 부위 수
     auction_price: float = 0       # 낙찰가 (만원) — 기준차량만 해당
     new_car_price: float = 0       # 신차가격 (만원) — 있으면 사용
+    base_price: float = 0          # 기본가 (만원) — 출고가 역산용
+    factory_price: float = 0       # 출고가 (만원) — 옵션가 역산용
+    option_unit_price: float = 0   # 같은 차종 출고가-기본가 역산 옵션 단가 (만원/개)
 
 
 @dataclass
@@ -511,45 +514,16 @@ class RuleEngine:
 
     def _adjust_options(self, target: Vehicle, reference: Vehicle) -> AdjustmentStep:
         """
-        선호옵션(선루프/스마트키/네비/후방카메라) 차이 보정.
+        옵션 차이 보정 (v2.3 고도화).
 
-        업계 룰: 1개당 약 50만원
+        1순위: 출고가-기본가 역산 (두 차량 모두 데이터 있을 때)
+        2순위: 전체 옵션 리스트 비교 + 선호옵션(50만원) / 일반옵션(per_option_avg)
         """
         rules = self.rules['preferred_options']
+        SUNROOF_VALUE = rules.get('sunroof', {}).get('default', 50)  # 선루프만 50만원
+        GENERAL_OPTION_DEFAULT = rules.get('general_option_default', 20)
 
-        option_map = {
-            '선루프': 'sunroof',
-            '스마트키': 'smart_key',
-            '네비게이션': 'navigation',
-            '후방카메라': 'rear_camera',
-        }
-
-        target_total = 0
-        ref_total = 0
-        detail_lines = []
-
-        for kor_name, eng_key in option_map.items():
-            option_rule = rules.get(eng_key, {})
-            value = option_rule.get('default', 50)
-
-            t_has = kor_name in target.options
-            r_has = kor_name in reference.options
-
-            if t_has:
-                target_total += value
-            if r_has:
-                ref_total += value
-
-            if t_has != r_has:
-                diff = value if t_has else -value
-                detail_lines.append(
-                    f"  {kor_name}: {'있음' if t_has else '없음'} vs "
-                    f"{'있음' if r_has else '없음'} → {diff:+.0f}만원"
-                )
-
-        raw_amount = target_total - ref_total
-
-        # 연식 가중치 — 오래된 차량일수록 옵션 가치 감소
+        # ── 연식 가중치 ──
         age = 2026 - target.year
         weight = 1.0
         color_rules = self.rules.get('color_adjustment', {})
@@ -558,27 +532,153 @@ class RuleEngine:
                 weight = w['weight']
                 break
 
+        # ── 출고가-기본가 역산 시도 ──
+        t_option_total = self._calc_option_total(target)
+        r_option_total = self._calc_option_total(reference)
+
+        if t_option_total > 0 and r_option_total > 0:
+            # 두 차량 모두 출고가-기본가 데이터 있음 → 직접 비교
+            raw_amount = t_option_total - r_option_total
+            amount = raw_amount * weight
+
+            return AdjustmentStep(
+                rule_name="옵션 보정",
+                rule_id="options",
+                description=(
+                    "옵션 차이 없음" if abs(amount) < 1
+                    else f"옵션가 {'가산' if amount > 0 else '감가'} (출고가-기본가 역산)"
+                ),
+                amount=round(amount, 1),
+                details=(
+                    f"[출고가-기본가 역산]\n"
+                    f"대상 옵션가: {t_option_total:.0f}만원 "
+                    f"(출고 {target.factory_price:.0f} - 기본 {target.base_price:.0f})\n"
+                    f"기준 옵션가: {r_option_total:.0f}만원 "
+                    f"(출고 {reference.factory_price:.0f} - 기본 {reference.base_price:.0f})\n"
+                    f"차이: {raw_amount:+.0f}만원"
+                    + (f" × 연식가중치 {weight} = {amount:+.1f}만원" if weight < 1.0 else "")
+                    + self._option_diff_text(target.options, reference.options)
+                ),
+                data_source="출고가-기본가 역산 + 연식가중치",
+            )
+
+        # ── 전체 옵션 리스트 비교 (폴백) ──
+        t_set = set(self._normalize_option_names(target.options))
+        r_set = set(self._normalize_option_names(reference.options))
+        only_target = t_set - r_set
+        only_ref = r_set - t_set
+
+        # 옵션 단가 추정 (우선순위: 개별 역산 > 차종 통계 > 기본값)
+        per_option_avg = GENERAL_OPTION_DEFAULT
+        price_source = "기본값"
+        # 1) 개별 차량의 출고가-기본가 역산
+        for veh in (target, reference):
+            opt_total = self._calc_option_total(veh)
+            n_opts = len(veh.options)
+            if opt_total > 0 and n_opts > 0:
+                per_option_avg = round(opt_total / n_opts, 1)
+                price_source = "출고가-기본가 역산"
+                break
+        # 2) 같은 차종 통계 (Firestore에서 사전 계산된 값)
+        if price_source == "기본값":
+            for veh in (target, reference):
+                if veh.option_unit_price > 0:
+                    per_option_avg = veh.option_unit_price
+                    price_source = "동일 차종 통계"
+                    break
+
+        # 선루프(50만원) / 일반옵션(per_option_avg) 분류
+        target_val = 0
+        ref_val = 0
+        detail_lines = []
+
+        for opt in sorted(only_target):
+            if self._is_sunroof(opt):
+                val = SUNROOF_VALUE
+                detail_lines.append(f"  + {opt} (선루프): +{val}만원")
+            else:
+                val = per_option_avg
+                detail_lines.append(f"  + {opt}: +{val}만원")
+            target_val += val
+
+        for opt in sorted(only_ref):
+            if self._is_sunroof(opt):
+                val = SUNROOF_VALUE
+                detail_lines.append(f"  - {opt} (선루프): -{val}만원")
+            else:
+                val = per_option_avg
+                detail_lines.append(f"  - {opt}: -{val}만원")
+            ref_val += val
+
+        raw_amount = target_val - ref_val
         amount = raw_amount * weight
 
         if abs(amount) < 1:
             desc = "옵션 차이 없음"
         else:
+            n_diff = len(only_target) + len(only_ref)
             weight_note = f", 연식가중치 {weight}" if weight < 1.0 else ""
-            desc = f"선호옵션 {'가산' if amount > 0 else '감가'} (1개당 50만원{weight_note})"
+            desc = f"옵션 {n_diff}개 차이 {'가산' if amount > 0 else '감가'}{weight_note}"
 
         return AdjustmentStep(
-            rule_name="선호옵션 보정",
+            rule_name="옵션 보정",
             rule_id="options",
             description=desc,
             amount=round(amount, 1),
             details=(
-                f"대상: {target_total:.0f}만원\n"
-                f"기준: {ref_total:.0f}만원\n"
+                f"대상 옵션({len(t_set)}개): {', '.join(sorted(t_set)) or '없음'}\n"
+                f"기준 옵션({len(r_set)}개): {', '.join(sorted(r_set)) or '없음'}\n"
+                f"---\n"
                 + ("\n".join(detail_lines) if detail_lines else "  차이 없음")
-                + (f"\n연식가중치: {weight} (차령 {age}년)" if weight < 1.0 else "")
+                + (f"\n---\n연식가중치: {weight} (차령 {age}년)" if weight < 1.0 else "")
+                + (f"\n옵션 단가: {per_option_avg}만원/개 ({price_source})" if price_source != "기본값" else "")
             ),
-            data_source="업계 룰: 선호옵션 1개당 50만원 × 연식가중치",
+            data_source="전체 옵션 비교: 선루프 50만원, 일반옵션 추정가 × 연식가중치",
         )
+
+    @staticmethod
+    def _calc_option_total(vehicle: Vehicle) -> float:
+        """출고가 - 기본가 = 옵션가 (양수일 때만, 음수는 할인이므로 0)"""
+        if vehicle.factory_price > 0 and vehicle.base_price > 0:
+            diff = vehicle.factory_price - vehicle.base_price
+            return diff if diff > 0 else 0
+        return 0
+
+    @staticmethod
+    def _normalize_option_names(options: list[str]) -> list[str]:
+        """옵션명 정규화 (괄호 정리, 공백 정리)"""
+        result = []
+        for opt in options:
+            name = opt.strip()
+            if not name:
+                continue
+            # "전동시트 (운전석" + "조수석)" 같은 분리된 옵션 스킵
+            if name.endswith(')') and '(' not in name:
+                continue
+            result.append(name)
+        return result
+
+    @staticmethod
+    def _is_sunroof(option_name: str) -> bool:
+        """선루프 여부 판별 (부분 매칭: 선루프, 썬루프, sunroof)"""
+        name = option_name.lower()
+        return '선루프' in name or '썬루프' in name or 'sunroof' in name
+
+    @staticmethod
+    def _option_diff_text(target_opts: list[str], ref_opts: list[str]) -> str:
+        """두 옵션 리스트의 차이를 텍스트로"""
+        t_set = set(target_opts)
+        r_set = set(ref_opts)
+        only_t = sorted(t_set - r_set)
+        only_r = sorted(r_set - t_set)
+        if not only_t and not only_r:
+            return "\n옵션 구성 동일"
+        lines = ["\n--- 옵션 차이 ---"]
+        if only_t:
+            lines.append(f"대상만: {', '.join(only_t)}")
+        if only_r:
+            lines.append(f"기준만: {', '.join(only_r)}")
+        return "\n" + "\n".join(lines)
 
     # -----------------------------------------------------------------
     # 룰 7: 연식 차이 보정
@@ -788,8 +888,8 @@ class RuleEngine:
             },
             {
                 "id": "options",
-                "name": "선호옵션 (선스네후)",
-                "description": "선루프/스마트키/네비/후방카메라, 1개당 50만원 × 연식가중치",
+                "name": "옵션 보정",
+                "description": "1순위: 출고가-기본가 역산, 2순위: 전체 옵션 비교 (선호 50만원, 일반 추정가) × 연식가중치",
             },
             {
                 "id": "year_diff",

@@ -71,6 +71,12 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
 
     sale_date = data.get("saleDate") or data.get("createdAt")
 
+    # 기본가 / 출고가 (원 → 만원 변환)
+    raw_base = _safe_number(data.get("vehicleBasePrice"))
+    raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+    base_price = round(raw_base / 10000, 1) if raw_base > 10000 else raw_base
+    factory_price = round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory
+
     return {
         # 한글 키 (기존 호출자 호환)
         "auction_id": doc_id,
@@ -103,6 +109,8 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "bodywork_count": 0,
         "grade_score": data.get("inspectionGrade") or "",
         "accident_severity": "unknown",
+        "base_price": base_price,
+        "factory_price": factory_price,
     }
 
 
@@ -113,6 +121,59 @@ def _match_contains(value: str | None, keyword: str | None) -> bool:
     if not value:
         return False
     return keyword.lower() in value.lower()
+
+
+# =========================================================================
+# 옵션 단가 추정 — 같은 차종의 출고가-기본가 데이터에서 역산
+# =========================================================================
+
+_option_unit_cache: dict[str, float] = {}
+
+
+def estimate_option_unit_price(maker: str, model: str) -> float:
+    """
+    같은 maker+model 차량 중 출고가/기본가 데이터가 있는 차량에서
+    옵션 단가(만원/개)를 추정한다. 결과는 세션 내 캐시.
+
+    계산: avg( (출고가 - 기본가) / 옵션 개수 )  (양수인 것만)
+    """
+    cache_key = f"{maker}:{model}"
+    if cache_key in _option_unit_cache:
+        return _option_unit_cache[cache_key]
+
+    db = get_firestore_db()
+    col = db.collection("vehicles")
+    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
+    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+
+    docs = query.limit(500).get()
+
+    unit_prices = []
+    for doc in docs:
+        data = doc.to_dict()
+        bp = _safe_number(data.get("vehicleBasePrice"))
+        fp = _safe_number(data.get("vehicleFactoryPrice"))
+        if bp <= 0 or fp <= 0:
+            continue
+
+        # 원 → 만원
+        bp_man = bp / 10000 if bp > 10000 else bp
+        fp_man = fp / 10000 if fp > 10000 else fp
+
+        option_total = fp_man - bp_man
+        if option_total <= 0:
+            continue  # 할인(음수)은 무시
+
+        opts = data.get("vehicleOptions") or []
+        n_opts = len([o for o in opts if isinstance(o, dict) and o.get("name")])
+        if n_opts == 0:
+            continue
+
+        unit_prices.append(option_total / n_opts)
+
+    result = round(statistics.mean(unit_prices), 1) if unit_prices else 0
+    _option_unit_cache[cache_key] = result
+    return result
 
 
 # =========================================================================
@@ -166,8 +227,8 @@ def search_auction_db(
         if price <= 0:
             continue
 
-        # 연식 범위
-        year = data.get("vehicleYear")
+        # 연식 범위 (Firestore에서 문자열로 올 수 있으므로 int 변환)
+        year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
             continue
         if year_max and (not year or year > year_max):
@@ -189,8 +250,8 @@ def search_auction_db(
         if not _match_contains(data.get("vehicleTrim"), trim):
             continue
 
-        # 주행거리 상한
-        mileage = data.get("mileage") or 0
+        # 주행거리 상한 (Firestore에서 문자열로 올 수 있으므로 숫자 변환)
+        mileage = int(_safe_number(data.get("mileage")))
         if mileage_max and mileage > mileage_max:
             continue
 
@@ -209,6 +270,12 @@ def search_auction_db(
 
         results.append(_to_legacy_dict(doc.id, data))
 
+    # 옵션 단가 추정값 주입 (같은 차종 출고가-기본가 기반)
+    unit_price = estimate_option_unit_price(maker, model)
+    if unit_price > 0:
+        for r in results:
+            r["option_unit_price"] = unit_price
+
     # Python 정렬
     if sort_by == "가격":
         results.sort(key=lambda x: x.get("낙찰가", 0), reverse=True)
@@ -224,7 +291,15 @@ def get_vehicle_detail(auction_id: str) -> dict | None:
     doc = db.collection("vehicles").document(auction_id).get()
     if not doc.exists:
         return None
-    return _to_legacy_dict(doc.id, doc.to_dict())
+    result = _to_legacy_dict(doc.id, doc.to_dict())
+    # 옵션 단가 추정값 주입
+    maker = result.get("maker")
+    model = result.get("model_name")
+    if maker and model:
+        unit_price = estimate_option_unit_price(maker, model)
+        if unit_price > 0:
+            result["option_unit_price"] = unit_price
+    return result
 
 
 def get_price_stats(
@@ -268,8 +343,8 @@ def get_price_stats(
         if generation and not _match_contains(data.get("generation"), generation):
             continue
 
-        # 연식 필터
-        if year and data.get("vehicleYear") != year:
+        # 연식 필터 (타입 안전 비교)
+        if year and int(_safe_number(data.get("vehicleYear"))) != year:
             continue
 
         # 날짜 필터
