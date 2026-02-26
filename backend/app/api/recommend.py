@@ -11,30 +11,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.schemas.vehicle import TargetVehicleSchema
 from app.services.llm_recommender import recommend_references
 from app.services.auction_db import get_vehicle_detail
 
 router = APIRouter()
-
-
-class TargetVehicle(BaseModel):
-    """대상차량 정보"""
-    maker: str                    # 제작사
-    model: str                    # 모델명
-    generation: str | None = None # 세대 코드
-    year: int                     # 연식
-    mileage: int                  # 주행거리 (km)
-    fuel: str | None = None       # 연료
-    displacement: str | None = None  # 배기량 (예: "2.0", "1.6")
-    drive: str | None = None      # 구동방식
-    trim: str | None = None       # 트림
-    color: str | None = None      # 색상
-    usage: str | None = None      # 차량경력 (자가용/렌터카)
-    domestic: bool = True         # 내수 여부
-    options: list[str] = []       # 옵션 목록
-    exchange_count: int = 0       # 교환 부위 수
-    bodywork_count: int = 0       # 판금 부위 수
-    exclude_auction_ids: list[str] = []  # 제외할 차량 ID (추가 추천 시)
 
 
 class ReferenceVehicle(BaseModel):
@@ -55,7 +36,7 @@ class ReferenceVehicle(BaseModel):
 
 class RecommendResponse(BaseModel):
     """추천 응답"""
-    target: TargetVehicle
+    target: TargetVehicleSchema
     recommendations: list[ReferenceVehicle]
     reasoning: str                # LLM 전체 추론 과정
     tool_calls_count: int = 0     # 도구 호출 횟수
@@ -63,7 +44,7 @@ class RecommendResponse(BaseModel):
 
 
 @router.post("/recommend", response_model=RecommendResponse)
-async def recommend_reference_vehicles(target: TargetVehicle):
+async def recommend_reference_vehicles(target: TargetVehicleSchema):
     """
     대상차량에 대한 기준차량 3건 추천.
     LLM 리즈닝 모델이 DB 검색 + 도메인 지식으로 추론.

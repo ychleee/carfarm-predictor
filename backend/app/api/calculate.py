@@ -7,6 +7,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.schemas.vehicle import TargetVehicleSchema
 from app.services.rule_engine import calculate_price as engine_calculate
 from app.services.auction_db import get_vehicle_detail
 
@@ -15,9 +16,9 @@ router = APIRouter()
 
 class CalculateRequest(BaseModel):
     """가격 산출 요청"""
-    target_vehicle: dict           # 대상차량 정보
-    reference_auction_id: str      # 선택된 기준차량 ID
-    reference_auction_price: float # 기준차량 낙찰가 (만원)
+    target_vehicle: TargetVehicleSchema  # 대상차량 정보 (snake_case & camelCase 모두 수용)
+    reference_auction_id: str            # 선택된 기준차량 ID
+    reference_auction_price: float       # 기준차량 낙찰가 (만원)
 
 
 class AdjustmentStepResponse(BaseModel):
@@ -67,5 +68,5 @@ async def calculate_price(request: CalculateRequest):
             "segment": ref_detail.get("segment", ""),
         })
 
-    result = engine_calculate(request.target_vehicle, reference)
+    result = engine_calculate(request.target_vehicle.model_dump(), reference)
     return result
