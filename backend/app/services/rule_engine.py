@@ -748,11 +748,22 @@ class RuleEngine:
                 weight = w['weight']
                 break
 
+        # ── 기본옵션 키워드 로드 ──
+        basic_keywords = rules.get('basic_option_keywords', [])
+
         # ── 항상 set 비교 ──
         t_set = set(self._normalize_option_names(target.options))
         r_set = set(self._normalize_option_names(reference.options))
-        only_target = t_set - r_set
-        only_ref = r_set - t_set
+        only_target_raw = t_set - r_set
+        only_ref_raw = r_set - t_set
+
+        # 기본옵션 필터링 (키워드 매칭되면 제외)
+        only_target = {o for o in only_target_raw
+                       if not self._is_basic_option(o, basic_keywords)}
+        only_ref = {o for o in only_ref_raw
+                    if not self._is_basic_option(o, basic_keywords)}
+        filtered_count = (len(only_target_raw) - len(only_target) +
+                          len(only_ref_raw) - len(only_ref))
 
         # 옵션 단가 추정 (출고가-기본가 → 단가 추정에만 사용)
         per_option_avg = GENERAL_OPTION_DEFAULT
@@ -806,6 +817,17 @@ class RuleEngine:
             weight_note = f", 연식가중치 {weight}" if weight < 1.0 else ""
             desc = f"옵션 {n_diff}개 차이 {'가산' if amount > 0 else '감가'}{weight_note}"
 
+        # 필터링된 기본옵션 목록 (디버깅용)
+        filtered_target = sorted(only_target_raw - only_target)
+        filtered_ref = sorted(only_ref_raw - only_ref)
+        filter_info = ""
+        if filtered_count > 0:
+            filter_info = f"\n---\n기본옵션 제외 {filtered_count}개"
+            if filtered_target:
+                filter_info += f"\n  대상 제외: {', '.join(filtered_target)}"
+            if filtered_ref:
+                filter_info += f"\n  기준 제외: {', '.join(filtered_ref)}"
+
         return AdjustmentStep(
             rule_name="옵션 보정",
             rule_id="options",
@@ -816,10 +838,11 @@ class RuleEngine:
                 f"기준 옵션({len(r_set)}개): {', '.join(sorted(r_set)) or '없음'}\n"
                 f"---\n"
                 + ("\n".join(detail_lines) if detail_lines else "  차이 없음")
+                + filter_info
                 + (f"\n---\n연식가중치: {weight} (차령 {age}년)" if weight < 1.0 else "")
                 + (f"\n옵션 단가: {per_option_avg}만원/개 ({price_source})" if price_source != "기본값" else "")
             ),
-            data_source="옵션 리스트 비교: 선루프 50만원, 일반옵션 추정가 × 연식가중치",
+            data_source="옵션 리스트 비교: 기본옵션 제외, 선루프 50만원, 일반옵션 추정가 × 연식가중치",
         )
 
     @staticmethod
@@ -849,6 +872,15 @@ class RuleEngine:
         """선루프 여부 판별 (부분 매칭: 선루프, 썬루프, sunroof)"""
         name = option_name.lower()
         return '선루프' in name or '썬루프' in name or 'sunroof' in name
+
+    @staticmethod
+    def _is_basic_option(option_name: str, keywords: list[str]) -> bool:
+        """기본옵션 여부 판별 (키워드 부분 매칭)"""
+        name = option_name.lower()
+        for kw in keywords:
+            if kw.lower() in name:
+                return True
+        return False
 
     @staticmethod
     def _option_diff_text(target_opts: list[str], ref_opts: list[str]) -> str:
