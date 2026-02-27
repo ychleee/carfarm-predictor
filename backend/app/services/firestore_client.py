@@ -40,16 +40,16 @@ def get_firestore_db():
                 key_path = str(candidate)
                 break
 
-    if not key_path:
-        raise FileNotFoundError(
-            "Firebase 서비스 계정 키를 찾을 수 없습니다. "
-            "FIREBASE_SERVICE_ACCOUNT_KEY 환경변수를 설정하거나 "
-            "backend/ 폴더에 issac-*-firebase-adminsdk-*.json 파일을 배치하세요."
-        )
-
-    cred = credentials.Certificate(key_path)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
+    if key_path:
+        cred = credentials.Certificate(key_path)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+    else:
+        # Cloud Run 등 ADC 사용 환경: 키 파일 없이 기본 자격증명 사용
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(options={
+                "projectId": "issac-1c2b0",
+            })
 
     _db = firestore.client()
     return _db

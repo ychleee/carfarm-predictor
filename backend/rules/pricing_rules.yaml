@@ -68,6 +68,104 @@ accident_adjustment:
 
 
 # =================================================================
+# 2-1. 부위별 사고 보정 가중치
+# =================================================================
+part_weight:
+  description: "부위별 사고 보정 가중치"
+
+  # 골격(구조) 부위 — 별도 골격사고 룰로 처리, 일반 교환/판금에서는 제외
+  structural_parts:
+    - FRONT_PANEL
+    - FRONT_CROSS_MEMBER
+    - FLOOR_PANEL
+    - SIDE_MEMBER
+    - REAR_CROSS_MEMBER
+    - TRUNK_FLOOR_PANEL
+    - REAR_PANEL
+
+  # 반구조 부위 (필러) — 교환 시 골격사고로 분류
+  semi_structural_parts:
+    - LEFT_A_PILLAR
+    - RIGHT_A_PILLAR
+    - LEFT_B_PILLAR
+    - RIGHT_B_PILLAR
+    - LEFT_C_PILLAR
+    - RIGHT_C_PILLAR
+
+  # 주요 외판 — 가중치 1.5 (일반 대비 50% 높은 감가)
+  major_outer:
+    parts:
+      - HOOD
+      - ROOF
+      - TRUNK
+      - LEFT_FRONT_FENDER
+      - RIGHT_FRONT_FENDER
+      - LEFT_FRONT_DOOR
+      - RIGHT_FRONT_DOOR
+      - LEFT_REAR_DOOR
+      - RIGHT_REAR_DOOR
+      - LEFT_QUARTER_PANEL
+      - RIGHT_QUARTER_PANEL
+    weight: 1.5
+
+  # 소형 부품 — 가중치 0.3 (감가 미미)
+  minor_parts:
+    parts:
+      - FRONT_BUMPER
+      - REAR_BUMPER
+      - LEFT_HEADLAMP
+      - RIGHT_HEADLAMP
+      - LEFT_TAIL_LAMP
+      - RIGHT_TAIL_LAMP
+      - LEFT_SIDE_MIRROR
+      - RIGHT_SIDE_MIRROR
+      - WINDSHIELD
+      - REAR_WINDSHIELD
+      - LEFT_FRONT_WHEEL
+      - RIGHT_FRONT_WHEEL
+      - LEFT_REAR_WHEEL
+      - RIGHT_REAR_WHEEL
+    weight: 0.3
+
+  # 기타 부위 — 가중치 1.0 (기본값)
+  default_weight: 1.0
+
+
+# =================================================================
+# 2-2. 골격사고 감가
+# =================================================================
+structural_damage:
+  description: "골격사고(C-F등급) 감가율"
+
+  # 교환/용접 = 골격사고 확정 damage types
+  severe_damage_types:
+    - EXCHANGE
+    - PANEL_WELDING
+    - BENT
+
+  # 등급별 감가율 (차량가 기준 %)
+  grades:
+    C:
+      min_parts: 1
+      rate: 0.15
+      label: "C등급 (경미 골격사고)"
+    D:
+      min_parts: 2
+      rate: 0.17
+      label: "D등급 (중간 골격사고)"
+    E:
+      min_parts: 3
+      rate: 0.18
+      label: "E등급 (중대 골격사고)"
+    F:
+      min_parts: 5
+      rate: 0.20
+      label: "F등급 (심각 골격사고)"
+
+  note: "골격사고 감가는 교환/판금 보정과 별도로 추가 적용"
+
+
+# =================================================================
 # 3. 색상 보정
 # =================================================================
 # 업계 룰: 선호도별 20만원 차등
@@ -146,12 +244,12 @@ export_domestic:
 
 
 # =================================================================
-# 6. 옵션 보정 (v2.3 고도화)
+# 6. 옵션 보정 (v2.4 개선)
 # =================================================================
-# 1순위: 출고가-기본가 역산 (데이터 있을 때)
-# 2순위: 전체 옵션 리스트 비교 (선호옵션 50만원, 일반옵션 추정가)
+# 항상 옵션 리스트 set 차이로 비교 (같은 옵션 무시, 차이만 적용)
+# 출고가-기본가 데이터는 개별 옵션 단가 추정에만 활용
 preferred_options:
-  description: "옵션 보정: 출고가-기본가 역산 또는 옵션 리스트 비교"
+  description: "옵션 보정: 항상 옵션 리스트 차이 비교, 출고가-기본가는 단가 추정용"
 
   # 선루프만 개별 가산 (만원) — 유일하게 가치 확정 가능한 옵션
   sunroof:

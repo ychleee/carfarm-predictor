@@ -77,6 +77,22 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     base_price = round(raw_base / 10000, 1) if raw_base > 10000 else raw_base
     factory_price = round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory
 
+    # partDamages 추출
+    part_damages_raw = data.get("partDamages") or []
+    part_damages = []
+    for pd in part_damages_raw:
+        if isinstance(pd, dict):
+            part = pd.get("part", "")
+            dt = pd.get("damageType") or pd.get("damage_type", "")
+            if part and dt:
+                part_damages.append({"part": part, "damage_type": dt})
+
+    # exchange_count / bodywork_count를 part_damages에서 재계산
+    exchange_types = {"EXCHANGE"}
+    bodywork_types = {"PAINT_PANEL_BEATING", "PANEL_WELDING"}
+    exchange_count = sum(1 for d in part_damages if d["damage_type"] in exchange_types)
+    bodywork_count = sum(1 for d in part_damages if d["damage_type"] in bodywork_types)
+
     return {
         # 한글 키 (기존 호출자 호환)
         "auction_id": doc_id,
@@ -105,8 +121,9 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "is_export": is_export,
         "segment": data.get("vehicleCategory") or "",
         "color_group": normalize_color(color),
-        "exchange_count": 0,
-        "bodywork_count": 0,
+        "exchange_count": exchange_count,
+        "bodywork_count": bodywork_count,
+        "part_damages": part_damages,
         "grade_score": data.get("inspectionGrade") or "",
         "accident_severity": "unknown",
         "base_price": base_price,

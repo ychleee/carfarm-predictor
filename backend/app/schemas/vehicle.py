@@ -10,6 +10,12 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class PartDamageSchema(BaseModel):
+    """부위별 손상 정보"""
+    part: str          # VehiclePart enum name (예: "HOOD", "FRONT_PANEL")
+    damage_type: str   # DamageType enum name (예: "EXCHANGE", "PAINT_PANEL_BEATING")
+
+
 class TargetVehicleSchema(BaseModel):
     """대상차량 입력 스키마 — API 경계에서 정규화 수행"""
 
@@ -38,6 +44,9 @@ class TargetVehicleSchema(BaseModel):
     factory_price: float = Field(default=0, alias="vehicleFactoryPrice")
     exclude_auction_ids: list[str] = Field(
         default_factory=list, alias="excludeAuctionIds"
+    )
+    part_damages: list[PartDamageSchema] = Field(
+        default_factory=list, alias="partDamages"
     )
 
     # --- 타입 변환 validators ---
@@ -111,3 +120,18 @@ class TargetVehicleSchema(BaseModel):
             return round(num / 10000, 1) if num > 100000 else num
         except (ValueError, TypeError):
             return 0
+
+    @field_validator("part_damages", mode="before")
+    @classmethod
+    def normalize_part_damages(cls, v):
+        """Firestore [{part, damageType, ...}] → [{part, damage_type}] 정규화"""
+        if not v:
+            return []
+        result = []
+        for item in v:
+            if isinstance(item, dict):
+                part = item.get("part", "")
+                dt = item.get("damage_type") or item.get("damageType", "")
+                if part and dt:
+                    result.append({"part": part, "damage_type": dt})
+        return result

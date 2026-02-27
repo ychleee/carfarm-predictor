@@ -65,6 +65,7 @@ async def calculate_price(request: CalculateRequest):
             "usage": ref_detail.get("usage_type", "personal"),
             "exchange_count": ref_detail.get("exchange_count", 0),
             "bodywork_count": ref_detail.get("bodywork_count", 0),
+            "part_damages": ref_detail.get("part_damages", []),
             "segment": ref_detail.get("segment", ""),
         })
 

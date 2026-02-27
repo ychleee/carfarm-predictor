@@ -6,12 +6,14 @@ CarFarm v2 — 룰 엔진 (Rule Engine)
 
 적용 룰 목록 (pricing_rules.yaml 기반, 프라이싱 매니저 업계 룰):
   1. 주행거리 감가 — 연식별 차등 (2%/1.5%/1%/10만원), 20만km 천장
-  2. 교환 보정 — 1회당 신차대비율 3%
-  3. 판금·도색 보정 — 연식/가격대별 1~2%
-  4. 색상 보정 — 선호도별 20만원, 차급별 선호 순서
-  5. 렌터카 감가 — 단일 계수
-  6. 옵션 보정 — 출고가-기본가 역산 또는 전체 옵션 리스트 비교
-  7. 최종 가격 산출 — 소매가 × 경매할인율, 최소 마진 적용
+  2. 교환 보정 — 부위별 가중치 적용, 골격 부위 제외
+  3. 판금·도색 보정 — 부위별 가중치 적용, 골격 부위 제외
+  4. 골격사고 보정 — C-F등급 15~20% 감가
+  5. 색상 보정 — 선호도별 20만원, 차급별 선호 순서
+  6. 렌터카 감가 — 단일 계수
+  7. 옵션 보정 — 옵션 리스트 차이 비교
+  8. 연식 보정 — 연당 2%
+  9. 최종 가격 산출 — 소매가 × 경매할인율, 최소 마진 적용
 
 사용법:
     engine = RuleEngine()
@@ -74,6 +76,7 @@ class Vehicle:
     options: list[str] = field(default_factory=list)
     exchange_count: int = 0        # X교환 부위 수
     bodywork_count: int = 0        # W판금 부위 수
+    part_damages: list[dict] = field(default_factory=list)  # [{part, damage_type}]
     auction_price: float = 0       # 낙찰가 (만원) — 기준차량만 해당
     new_car_price: float = 0       # 신차가격 (만원) — 있으면 사용
     base_price: float = 0          # 기본가 (만원) — 출고가 역산용
@@ -160,23 +163,27 @@ class RuleEngine:
         step = self._adjust_bodywork(target, reference, base_price)
         result.adjustments.append(step)
 
-        # ── 룰 4: 색상 보정 ──
+        # ── 룰 4: 골격사고 보정 ──
+        step = self._adjust_structural(target, reference, base_price)
+        result.adjustments.append(step)
+
+        # ── 룰 5: 색상 보정 ──
         step = self._adjust_color(target, reference)
         result.adjustments.append(step)
 
-        # ── 룰 5: 렌터카 감가 ──
+        # ── 룰 6: 렌터카 감가 ──
         step = self._adjust_rental(target, reference, base_price)
         result.adjustments.append(step)
 
-        # ── 룰 6: 선호옵션 보정 ──
+        # ── 룰 7: 선호옵션 보정 ──
         step = self._adjust_options(target, reference)
         result.adjustments.append(step)
 
-        # ── 룰 7: 연식 차이 보정 ──
+        # ── 룰 8: 연식 차이 보정 ──
         step = self._adjust_year_diff(target, reference, base_price)
         result.adjustments.append(step)
 
-        # ── 룰 8: 트림 차이 경고 ──
+        # ── 룰 9: 트림 차이 경고 ──
         trim_warning = self._warn_trim_diff(target, reference)
         if trim_warning:
             result.adjustments.append(trim_warning)
@@ -299,9 +306,13 @@ class RuleEngine:
         """
         교환(X) 부위 수 차이에 따른 보정.
 
-        업계 룰: 1회당 신차대비율 3% (선형)
-        대상이 기준보다 교환 많으면 감가, 적으면 가산.
+        part_damages 있으면 → 부위별 가중치 적용 (골격 부위 제외)
+        없으면 → 기존 count × 일괄 비율 유지 (하위 호환)
         """
+        if target.part_damages or reference.part_damages:
+            return self._adjust_exchange_by_part(target, reference, base_price)
+
+        # 기존 로직 (하위 호환)
         rules = self.rules['accident_adjustment']
         rate = rules['exchange']['rate_per_count']  # 0.03
 
@@ -331,6 +342,53 @@ class RuleEngine:
             data_source=f"업계 룰: 교환 1회당 {rate*100:.0f}%",
         )
 
+    def _adjust_exchange_by_part(self, target: Vehicle, reference: Vehicle,
+                                 base_price: float) -> AdjustmentStep:
+        """부위별 가중 교환 보정 (골격 부위 제외 — 골격사고 룰에서 별도 처리)"""
+        rules = self.rules['accident_adjustment']
+        rate = rules['exchange']['rate_per_count']  # 0.03
+        structural = self._get_structural_parts()
+
+        t_exchanges = [d for d in target.part_damages
+                       if d['damage_type'] == 'EXCHANGE' and d['part'] not in structural]
+        r_exchanges = [d for d in reference.part_damages
+                       if d['damage_type'] == 'EXCHANGE' and d['part'] not in structural]
+
+        t_weighted = sum(self._get_part_weight(d['part']) for d in t_exchanges)
+        r_weighted = sum(self._get_part_weight(d['part']) for d in r_exchanges)
+        diff = t_weighted - r_weighted
+
+        if abs(diff) < 0.01:
+            return AdjustmentStep(
+                rule_name="교환(X) 보정",
+                rule_id="exchange",
+                description="교환 보정 차이 없음 (부위별 가중)",
+                amount=0,
+                details=(
+                    f"대상 교환: {[d['part'] for d in t_exchanges] or '없음'} (가중합: {t_weighted:.1f})\n"
+                    f"기준 교환: {[d['part'] for d in r_exchanges] or '없음'} (가중합: {r_weighted:.1f})"
+                ),
+            )
+
+        amount = -diff * rate * base_price
+
+        t_detail = ", ".join(f"{d['part']}(×{self._get_part_weight(d['part'])})" for d in t_exchanges) or "없음"
+        r_detail = ", ".join(f"{d['part']}(×{self._get_part_weight(d['part'])})" for d in r_exchanges) or "없음"
+
+        return AdjustmentStep(
+            rule_name="교환(X) 보정",
+            rule_id="exchange",
+            description=f"교환 {'감가' if diff > 0 else '가산'} (부위별 가중, 골격 제외)",
+            amount=round(amount, 1),
+            details=(
+                f"대상 교환: {t_detail} (가중합: {t_weighted:.1f})\n"
+                f"기준 교환: {r_detail} (가중합: {r_weighted:.1f})\n"
+                f"가중 차이: {diff:+.1f}\n"
+                f"계산: {abs(diff):.1f} × {rate*100:.0f}% × {base_price:.0f}만원 = {abs(amount):.1f}만원"
+            ),
+            data_source=f"업계 룰: 교환 1회당 {rate*100:.0f}% × 부위별 가중치",
+        )
+
     # -----------------------------------------------------------------
     # 룰 3: 판금·도색 보정
     # -----------------------------------------------------------------
@@ -340,12 +398,13 @@ class RuleEngine:
         """
         판금·도색(W) 부위 수 차이에 따른 보정.
 
-        업계 룰 (연식/가격대별 차등):
-        - 3년 미만 또는 2500만원+: 1회당 2%
-        - 3~7년 또는 1500~2500만원: 1회당 1.5%
-        - 500만원 미만: 미적용
-        - 기타: 1회당 1%
+        part_damages 있으면 → 부위별 가중치 적용 (골격 부위 제외)
+        없으면 → 기존 count × 일괄 비율 유지 (하위 호환)
         """
+        if target.part_damages or reference.part_damages:
+            return self._adjust_bodywork_by_part(target, reference, base_price)
+
+        # 기존 로직 (하위 호환)
         diff = target.bodywork_count - reference.bodywork_count
 
         if diff == 0:
@@ -390,6 +449,58 @@ class RuleEngine:
             data_source=f"업계 룰: {tier_label} {rate*100:.1f}%/회",
         )
 
+    def _adjust_bodywork_by_part(self, target: Vehicle, reference: Vehicle,
+                                 base_price: float) -> AdjustmentStep:
+        """부위별 가중 판금 보정 (골격 부위 제외)"""
+        BODYWORK_TYPES = {'PAINT_PANEL_BEATING', 'PANEL_WELDING'}
+        structural = self._get_structural_parts()
+
+        age = 2026 - target.year
+        rate, tier_label = self._get_bodywork_rate(age, base_price)
+
+        t_bodywork = [d for d in target.part_damages
+                      if d['damage_type'] in BODYWORK_TYPES and d['part'] not in structural]
+        r_bodywork = [d for d in reference.part_damages
+                      if d['damage_type'] in BODYWORK_TYPES and d['part'] not in structural]
+
+        t_weighted = sum(self._get_part_weight(d['part']) for d in t_bodywork)
+        r_weighted = sum(self._get_part_weight(d['part']) for d in r_bodywork)
+        diff = t_weighted - r_weighted
+
+        if abs(diff) < 0.01 or rate == 0:
+            desc = "판금 보정 차이 없음 (부위별 가중)" if abs(diff) < 0.01 else f"판금 보정 미적용 ({tier_label})"
+            return AdjustmentStep(
+                rule_name="판금(W) 보정",
+                rule_id="bodywork",
+                description=desc,
+                amount=0,
+                details=(
+                    f"대상 판금: {[d['part'] for d in t_bodywork] or '없음'} (가중합: {t_weighted:.1f})\n"
+                    f"기준 판금: {[d['part'] for d in r_bodywork] or '없음'} (가중합: {r_weighted:.1f})\n"
+                    f"구간: {tier_label} → {rate*100:.1f}%/회"
+                ),
+            )
+
+        amount = -diff * rate * base_price
+
+        t_detail = ", ".join(f"{d['part']}(×{self._get_part_weight(d['part'])})" for d in t_bodywork) or "없음"
+        r_detail = ", ".join(f"{d['part']}(×{self._get_part_weight(d['part'])})" for d in r_bodywork) or "없음"
+
+        return AdjustmentStep(
+            rule_name="판금(W) 보정",
+            rule_id="bodywork",
+            description=f"판금 {'감가' if diff > 0 else '가산'} ({tier_label}, 부위별 가중)",
+            amount=round(amount, 1),
+            details=(
+                f"대상 판금: {t_detail} (가중합: {t_weighted:.1f})\n"
+                f"기준 판금: {r_detail} (가중합: {r_weighted:.1f})\n"
+                f"가중 차이: {diff:+.1f}\n"
+                f"구간: {tier_label} → {rate*100:.1f}%/회\n"
+                f"계산: {abs(diff):.1f} × {rate*100:.1f}% × {base_price:.0f}만원 = {abs(amount):.1f}만원"
+            ),
+            data_source=f"업계 룰: {tier_label} {rate*100:.1f}%/회 × 부위별 가중치",
+        )
+
     def _get_bodywork_rate(self, age: int, price: float) -> tuple[float, str]:
         """판금 감가율 조회 (연식/가격대별)"""
         if price < 500:
@@ -401,7 +512,112 @@ class RuleEngine:
         return 0.01, "기타"
 
     # -----------------------------------------------------------------
-    # 룰 4: 색상 보정
+    # 룰 4: 골격사고 보정
+    # -----------------------------------------------------------------
+
+    def _adjust_structural(self, target: Vehicle, reference: Vehicle,
+                           base_price: float) -> AdjustmentStep:
+        """골격사고(C-F등급) 감가 보정"""
+        rules = self.rules.get('structural_damage', {})
+        structural_parts = self._get_structural_parts()
+        severe_types = set(rules.get('severe_damage_types', ['EXCHANGE', 'PANEL_WELDING', 'BENT']))
+
+        # part_damages가 없으면 골격사고 판단 불가 → 스킵
+        if not target.part_damages and not reference.part_damages:
+            return AdjustmentStep(
+                rule_name="골격사고 보정",
+                rule_id="structural",
+                description="부위별 데이터 없음 (판단 불가)",
+                amount=0,
+                details="part_damages 데이터가 없어 골격사고 판단을 생략합니다.",
+            )
+
+        # 대상/기준 골격 손상 부위 수
+        t_structural = {d['part'] for d in target.part_damages
+                        if d['part'] in structural_parts and d['damage_type'] in severe_types}
+        r_structural = {d['part'] for d in reference.part_damages
+                        if d['part'] in structural_parts and d['damage_type'] in severe_types}
+
+        t_count = len(t_structural)
+        r_count = len(r_structural)
+
+        if t_count == 0 and r_count == 0:
+            return AdjustmentStep(
+                rule_name="골격사고 보정",
+                rule_id="structural",
+                description="골격사고 없음",
+                amount=0,
+                details="대상/기준 모두 골격 부위 손상 없음",
+            )
+
+        # 등급 판정
+        t_grade, t_rate, t_label = self._classify_structural_grade(t_count, rules)
+        r_grade, r_rate, r_label = self._classify_structural_grade(r_count, rules)
+
+        # 차이 적용
+        amount = -(t_rate - r_rate) * base_price
+
+        if abs(amount) < 0.1:
+            desc = f"골격사고 등급 동일 ({t_label})"
+        else:
+            desc = f"골격사고 {'감가' if amount < 0 else '가산'} ({t_label} vs {r_label})"
+
+        return AdjustmentStep(
+            rule_name="골격사고 보정",
+            rule_id="structural",
+            description=desc,
+            amount=round(amount, 1),
+            details=(
+                f"대상 골격손상: {', '.join(sorted(t_structural)) or '없음'} → {t_label}\n"
+                f"기준 골격손상: {', '.join(sorted(r_structural)) or '없음'} → {r_label}\n"
+                f"감가율 차이: {(t_rate - r_rate)*100:+.0f}%\n"
+                f"계산: {abs(t_rate - r_rate)*100:.0f}% × {base_price:.0f}만원 = {abs(amount):.1f}만원"
+            ),
+            data_source="업계 룰: 골격사고 C-F등급 15-20%",
+        )
+
+    def _classify_structural_grade(self, count: int, rules: dict) -> tuple[str, float, str]:
+        """골격 손상 부위 수 → 등급/감가율"""
+        grades = rules.get('grades', {})
+        if count == 0:
+            return "무사고", 0.0, "무사고"
+        if count >= grades.get('F', {}).get('min_parts', 5):
+            g = grades['F']
+            return "F", g['rate'], g['label']
+        if count >= grades.get('E', {}).get('min_parts', 3):
+            g = grades['E']
+            return "E", g['rate'], g['label']
+        if count >= grades.get('D', {}).get('min_parts', 2):
+            g = grades['D']
+            return "D", g['rate'], g['label']
+        g = grades.get('C', {'rate': 0.15, 'label': 'C등급'})
+        return "C", g['rate'], g['label']
+
+    # -----------------------------------------------------------------
+    # 부위별 가중치 헬퍼
+    # -----------------------------------------------------------------
+
+    def _get_structural_parts(self) -> set[str]:
+        """골격+반구조 부위 목록"""
+        part_rules = self.rules.get('part_weight', {})
+        return set(
+            part_rules.get('structural_parts', []) +
+            part_rules.get('semi_structural_parts', [])
+        )
+
+    def _get_part_weight(self, part: str) -> float:
+        """부위명 → 가중치 반환"""
+        part_rules = self.rules.get('part_weight', {})
+        major = part_rules.get('major_outer', {})
+        minor = part_rules.get('minor_parts', {})
+        if part in major.get('parts', []):
+            return major.get('weight', 1.5)
+        if part in minor.get('parts', []):
+            return minor.get('weight', 0.3)
+        return part_rules.get('default_weight', 1.0)
+
+    # -----------------------------------------------------------------
+    # 룰 5: 색상 보정
     # -----------------------------------------------------------------
 
     def _adjust_color(self, target: Vehicle, reference: Vehicle) -> AdjustmentStep:
@@ -514,13 +730,13 @@ class RuleEngine:
 
     def _adjust_options(self, target: Vehicle, reference: Vehicle) -> AdjustmentStep:
         """
-        옵션 차이 보정 (v2.3 고도화).
+        옵션 차이 보정 (v2.4 개선).
 
-        1순위: 출고가-기본가 역산 (두 차량 모두 데이터 있을 때)
-        2순위: 전체 옵션 리스트 비교 + 선호옵션(50만원) / 일반옵션(per_option_avg)
+        항상 옵션 리스트의 set 차이로 비교 (같은 옵션 무시, 차이만 적용).
+        출고가-기본가 데이터는 개별 옵션 단가 추정에만 활용.
         """
         rules = self.rules['preferred_options']
-        SUNROOF_VALUE = rules.get('sunroof', {}).get('default', 50)  # 선루프만 50만원
+        SUNROOF_VALUE = rules.get('sunroof', {}).get('default', 50)
         GENERAL_OPTION_DEFAULT = rules.get('general_option_default', 20)
 
         # ── 연식 가중치 ──
@@ -532,43 +748,13 @@ class RuleEngine:
                 weight = w['weight']
                 break
 
-        # ── 출고가-기본가 역산 시도 ──
-        t_option_total = self._calc_option_total(target)
-        r_option_total = self._calc_option_total(reference)
-
-        if t_option_total > 0 and r_option_total > 0:
-            # 두 차량 모두 출고가-기본가 데이터 있음 → 직접 비교
-            raw_amount = t_option_total - r_option_total
-            amount = raw_amount * weight
-
-            return AdjustmentStep(
-                rule_name="옵션 보정",
-                rule_id="options",
-                description=(
-                    "옵션 차이 없음" if abs(amount) < 1
-                    else f"옵션가 {'가산' if amount > 0 else '감가'} (출고가-기본가 역산)"
-                ),
-                amount=round(amount, 1),
-                details=(
-                    f"[출고가-기본가 역산]\n"
-                    f"대상 옵션가: {t_option_total:.0f}만원 "
-                    f"(출고 {target.factory_price:.0f} - 기본 {target.base_price:.0f})\n"
-                    f"기준 옵션가: {r_option_total:.0f}만원 "
-                    f"(출고 {reference.factory_price:.0f} - 기본 {reference.base_price:.0f})\n"
-                    f"차이: {raw_amount:+.0f}만원"
-                    + (f" × 연식가중치 {weight} = {amount:+.1f}만원" if weight < 1.0 else "")
-                    + self._option_diff_text(target.options, reference.options)
-                ),
-                data_source="출고가-기본가 역산 + 연식가중치",
-            )
-
-        # ── 전체 옵션 리스트 비교 (폴백) ──
+        # ── 항상 set 비교 ──
         t_set = set(self._normalize_option_names(target.options))
         r_set = set(self._normalize_option_names(reference.options))
         only_target = t_set - r_set
         only_ref = r_set - t_set
 
-        # 옵션 단가 추정 (우선순위: 개별 역산 > 차종 통계 > 기본값)
+        # 옵션 단가 추정 (출고가-기본가 → 단가 추정에만 사용)
         per_option_avg = GENERAL_OPTION_DEFAULT
         price_source = "기본값"
         # 1) 개별 차량의 출고가-기본가 역산
@@ -633,7 +819,7 @@ class RuleEngine:
                 + (f"\n---\n연식가중치: {weight} (차령 {age}년)" if weight < 1.0 else "")
                 + (f"\n옵션 단가: {per_option_avg}만원/개 ({price_source})" if price_source != "기본값" else "")
             ),
-            data_source="전체 옵션 비교: 선루프 50만원, 일반옵션 추정가 × 연식가중치",
+            data_source="옵션 리스트 비교: 선루프 50만원, 일반옵션 추정가 × 연식가중치",
         )
 
     @staticmethod
@@ -864,12 +1050,17 @@ class RuleEngine:
             {
                 "id": "exchange",
                 "name": "교환(X) 보정",
-                "description": "1회당 신차대비율 3%",
+                "description": "1회당 신차대비율 3% (부위별 가중치 적용, 골격 부위 제외)",
             },
             {
                 "id": "bodywork",
                 "name": "판금(W) 보정",
-                "description": "연식/가격대별 1~2% (3년미만/2500만+: 2%, 3~7년/1500~2500: 1.5%, 기타: 1%, 500만-: 미적용)",
+                "description": "연식/가격대별 1~2% (부위별 가중치 적용, 골격 부위 제외)",
+            },
+            {
+                "id": "structural",
+                "name": "골격사고 보정",
+                "description": "C등급(1부위) 15%, D등급(2부위) 17%, E등급(3부위) 18%, F등급(5부위+) 20%",
             },
             {
                 "id": "color",
@@ -889,7 +1080,7 @@ class RuleEngine:
             {
                 "id": "options",
                 "name": "옵션 보정",
-                "description": "1순위: 출고가-기본가 역산, 2순위: 전체 옵션 비교 (선호 50만원, 일반 추정가) × 연식가중치",
+                "description": "옵션 리스트 차이 비교 (선루프 50만원, 일반옵션 추정가) × 연식가중치",
             },
             {
                 "id": "year_diff",
