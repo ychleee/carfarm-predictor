@@ -10,10 +10,9 @@ CarFarm v2 — 룰 엔진 (Rule Engine)
   3. 판금·도색 보정 — 부위별 가중치 적용, 골격 부위 제외
   4. 골격사고 보정 — C-F등급 15~20% 감가
   5. 색상 보정 — 선호도별 20만원, 차급별 선호 순서
-  6. 렌터카 감가 — 단일 계수
-  7. 옵션 보정 — 옵션 리스트 차이 비교
-  8. 연식 보정 — 연당 2%
-  9. 최종 가격 산출 — 소매가 × 경매할인율, 최소 마진 적용
+  6. 옵션 보정 — 옵션 리스트 차이 비교
+  7. 연식 보정 — 연당 2%
+  8. 최종 가격 산출 — 소매가 × 경매할인율, 최소 마진 적용
 
 사용법:
     engine = RuleEngine()
@@ -24,7 +23,7 @@ from __future__ import annotations
 
 import yaml
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 # =========================================================================
@@ -151,6 +150,15 @@ class RuleEngine:
         result = PriceResult(reference_price=reference.auction_price)
         base_price = reference.auction_price
 
+        # ── AA등급 보정: 대상차량을 항상 무사고(AA)로 간주 ──
+        # 사고 이력을 제거하여 AA등급 기준 가격을 예측
+        target = replace(
+            target,
+            exchange_count=0,
+            bodywork_count=0,
+            part_damages=[],
+        )
+
         # ── 룰 1: 주행거리 감가 ──
         step = self._adjust_mileage(target, reference, base_price)
         result.adjustments.append(step)
@@ -171,19 +179,15 @@ class RuleEngine:
         step = self._adjust_color(target, reference)
         result.adjustments.append(step)
 
-        # ── 룰 6: 렌터카 감가 ──
-        step = self._adjust_rental(target, reference, base_price)
-        result.adjustments.append(step)
-
-        # ── 룰 7: 선호옵션 보정 ──
+        # ── 룰 6: 선호옵션 보정 ──
         step = self._adjust_options(target, reference)
         result.adjustments.append(step)
 
-        # ── 룰 8: 연식 차이 보정 ──
+        # ── 룰 7: 연식 차이 보정 ──
         step = self._adjust_year_diff(target, reference, base_price)
         result.adjustments.append(step)
 
-        # ── 룰 9: 트림 차이 경고 ──
+        # ── 룰 8: 트림 차이 경고 ──
         trim_warning = self._warn_trim_diff(target, reference)
         if trim_warning:
             result.adjustments.append(trim_warning)
@@ -677,54 +681,6 @@ class RuleEngine:
         )
 
     # -----------------------------------------------------------------
-    # 룰 5: 렌터카 감가
-    # -----------------------------------------------------------------
-
-    def _adjust_rental(self, target: Vehicle, reference: Vehicle,
-                       base_price: float) -> AdjustmentStep:
-        """
-        렌터카 경력에 따른 감가 보정.
-
-        업계 룰: 단일 계수 적용 (약 5%)
-        """
-        rules = self.rules['rental_discount']
-        target_rental = target.usage == 'rental'
-        ref_rental = reference.usage == 'rental'
-
-        # 둘 다 렌터카이거나 둘 다 아니면 차이 없음
-        if target_rental == ref_rental:
-            return AdjustmentStep(
-                rule_name="렌터카 보정",
-                rule_id="rental",
-                description="경력 동일 (보정 없음)",
-                amount=0,
-                details=f"대상: {target.usage}, 기준: {reference.usage}",
-            )
-
-        rate = rules.get('default_rate', -0.05)
-
-        # 대상이 렌터카면 감가, 기준이 렌터카면 가산
-        if target_rental:
-            amount = rate * base_price
-            direction = "감가"
-        else:
-            amount = -rate * base_price
-            direction = "가산"
-
-        return AdjustmentStep(
-            rule_name="렌터카 보정",
-            rule_id="rental",
-            description=f"렌터카 {direction} ({rate*100:+.1f}%)",
-            amount=round(amount, 1),
-            details=(
-                f"대상: {target.usage}, 기준: {reference.usage}\n"
-                f"계수: {rate*100:+.1f}%\n"
-                f"계산: {rate*100:+.1f}% × {base_price:.0f}만원 = {amount:+.1f}만원"
-            ),
-            data_source=f"업계 룰: 렌터카 {rate*100:+.1f}%",
-        )
-
-    # -----------------------------------------------------------------
     # 룰 6: 선호옵션 보정 (선스네후)
     # -----------------------------------------------------------------
 
@@ -1103,11 +1059,6 @@ class RuleEngine:
                     "일반": "흰색 > 검정 > 메탈 > 실버 > 원색",
                     "경차": "흰색 > 미색 > 메탈=실버 > 검정 > 원색",
                 },
-            },
-            {
-                "id": "rental",
-                "name": "렌터카 감가",
-                "description": f"단일 계수 {self.rules['rental_discount']['default_rate']*100:.0f}%",
             },
             {
                 "id": "options",
