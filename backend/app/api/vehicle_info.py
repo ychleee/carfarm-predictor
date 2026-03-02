@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query
 from app.services.taxonomy_search import (
     search_vehicles, get_makers, get_models, get_generations, get_variants, get_trims,
 )
-from app.services.firestore_db import search_auction_db, get_price_stats
+from app.services.firestore_db import search_auction_db, search_retail_db, get_price_stats
 
 router = APIRouter()
 
@@ -60,6 +60,98 @@ async def price_stats(
 ):
     """모델별 시세 통계 (최근 N개월)"""
     return get_price_stats(maker, model, generation, year, months)
+
+
+@router.get("/search-retail")
+async def search_retail(
+    maker: str = Query(...),
+    model: str = Query(...),
+    generation: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    fuel: str | None = None,
+    trim: str | None = None,
+    mileage_max: int | None = None,
+    limit: int = 100,
+    sort_by: str = "가격",
+):
+    """소매가 차량 검색 (영문키 반환)"""
+    results = search_retail_db(
+        maker=maker, model=model, generation=generation,
+        year_min=year_min, year_max=year_max,
+        fuel=fuel, trim=trim, mileage_max=mileage_max,
+        limit=limit, sort_by=sort_by,
+    )
+    # 한글키 → 영문키 변환
+    mapped = []
+    for r in results:
+        mapped.append({
+            "auction_id": r.get("auction_id", ""),
+            "vehicle_name": r.get("차명", ""),
+            "year": r.get("연식"),
+            "mileage": r.get("주행거리"),
+            "retail_price": r.get("소매가"),
+            "color": r.get("색상", ""),
+            "options": r.get("옵션", ""),
+            "fuel": r.get("연료", ""),
+            "trim": r.get("trim", ""),
+            "source_url": r.get("source_url", ""),
+            "factory_price": r.get("factory_price"),
+            "frame_exchange": r.get("frame_exchange", 0),
+            "frame_bodywork": r.get("frame_bodywork", 0),
+            "frame_corrosion": r.get("frame_corrosion", 0),
+            "exterior_exchange": r.get("exterior_exchange", 0),
+            "exterior_bodywork": r.get("exterior_bodywork", 0),
+            "exterior_corrosion": r.get("exterior_corrosion", 0),
+        })
+    return {"count": len(mapped), "results": mapped}
+
+
+@router.get("/search-auction")
+async def search_auction_endpoint(
+    maker: str = Query(...),
+    model: str = Query(...),
+    generation: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    fuel: str | None = None,
+    trim: str | None = None,
+    mileage_max: int | None = None,
+    usage: str | None = None,
+    limit: int = 100,
+    sort_by: str = "날짜",
+):
+    """낙찰가 차량 검색 (영문키 반환)"""
+    results = search_auction_db(
+        maker=maker, model=model, generation=generation,
+        year_min=year_min, year_max=year_max,
+        fuel=fuel, trim=trim, mileage_max=mileage_max,
+        usage=usage, limit=limit, sort_by=sort_by,
+    )
+    # 한글키 → 영문키 변환
+    mapped = []
+    for r in results:
+        mapped.append({
+            "auction_id": r.get("auction_id", ""),
+            "vehicle_name": r.get("차명", ""),
+            "year": r.get("연식"),
+            "mileage": r.get("주행거리"),
+            "auction_price": r.get("낙찰가"),
+            "auction_date": r.get("개최일", ""),
+            "color": r.get("색상", ""),
+            "options": r.get("옵션", ""),
+            "fuel": r.get("연료", ""),
+            "trim": r.get("trim", ""),
+            "inspection_grade": r.get("평가점", ""),
+            "factory_price": r.get("factory_price"),
+            "frame_exchange": r.get("frame_exchange", 0),
+            "frame_bodywork": r.get("frame_bodywork", 0),
+            "frame_corrosion": r.get("frame_corrosion", 0),
+            "exterior_exchange": r.get("exterior_exchange", 0),
+            "exterior_bodywork": r.get("exterior_bodywork", 0),
+            "exterior_corrosion": r.get("exterior_corrosion", 0),
+        })
+    return {"count": len(mapped), "results": mapped}
 
 
 @router.get("/search")

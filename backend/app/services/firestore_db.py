@@ -7,6 +7,7 @@ CarFarm v2.3 — Firestore 기반 차량 DB
 
 from __future__ import annotations
 
+import re
 import statistics
 from datetime import datetime, timedelta, timezone
 
@@ -21,11 +22,13 @@ from app.services.rule_engine import normalize_color
 # =========================================================================
 
 def _safe_number(val, default=0) -> float | int:
-    """문자열/None → 숫자"""
+    """문자열/None → 숫자 (콤마 포함 문자열 지원)"""
     if val is None:
         return default
     try:
-        return float(val) if isinstance(val, str) else val
+        if isinstance(val, str):
+            return float(val.replace(",", ""))
+        return val
     except (ValueError, TypeError):
         return default
 
@@ -37,6 +40,67 @@ _USAGE_MAP = {
     "관용": "commercial",
     "일반": "personal",
 }
+
+# ── 프레임 vs 외부패널 분류 ──
+
+_FRAME_PARTS = {
+    "FRONT_PANEL", "FRONT_CROSS_MEMBER", "FLOOR_PANEL",
+    "SIDE_MEMBER", "REAR_CROSS_MEMBER", "TRUNK_FLOOR_PANEL", "REAR_PANEL",
+    "LEFT_A_PILLAR", "RIGHT_A_PILLAR",
+    "LEFT_B_PILLAR", "RIGHT_B_PILLAR",
+    "LEFT_C_PILLAR", "RIGHT_C_PILLAR",
+    "LEFT_FRONT_INSIDE_PANEL", "RIGHT_FRONT_INSIDE_PANEL",
+    "LEFT_REAR_INSIDE_PANEL", "RIGHT_REAR_INSIDE_PANEL",
+    "LEFT_FRONT_WHEELS_HOUSE", "RIGHT_FRONT_WHEELS_HOUSE",
+    "LEFT_REAR_WHEELS_HOUSE", "RIGHT_REAR_WHEELS_HOUSE",
+}
+
+_EXTERIOR_PARTS = {
+    "HOOD", "TRUNK", "ROOF",
+    "FRONT_BUMPER", "REAR_BUMPER",
+    "LEFT_FRONT_FENDER", "RIGHT_FRONT_FENDER",
+    "LEFT_FRONT_DOOR", "RIGHT_FRONT_DOOR",
+    "LEFT_REAR_DOOR", "RIGHT_REAR_DOOR",
+    "LEFT_QUARTER_PANEL", "RIGHT_QUARTER_PANEL",
+    "LEFT_FOOT_PANEL", "RIGHT_FOOT_PANEL",
+}
+
+_EXCHANGE_TYPES = {"EXCHANGE", "EXCHANGE_NEEDED"}
+_BODYWORK_TYPES = {"PAINT_PANEL_BEATING", "PANEL_WELDING", "PANEL_BEATING",
+                   "PANEL_BEATING_NEEDED", "PAINT_NEEDED", "BENT"}
+_CORROSION_TYPES = {"CORROSION"}
+
+
+def _calc_damage_stats(part_damages: list[dict]) -> dict:
+    """partDamages → 프레임/외부패널별 교환·판금·부식 카운트"""
+    stats = {
+        "frame_exchange": 0,
+        "frame_bodywork": 0,
+        "frame_corrosion": 0,
+        "exterior_exchange": 0,
+        "exterior_bodywork": 0,
+        "exterior_corrosion": 0,
+    }
+    for d in part_damages:
+        part = d.get("part", "")
+        dt = d.get("damage_type", "")
+
+        if part in _FRAME_PARTS:
+            prefix = "frame"
+        elif part in _EXTERIOR_PARTS:
+            prefix = "exterior"
+        else:
+            # 미분류 부위는 외부패널로 처리
+            prefix = "exterior"
+
+        if dt in _EXCHANGE_TYPES:
+            stats[f"{prefix}_exchange"] += 1
+        elif dt in _BODYWORK_TYPES:
+            stats[f"{prefix}_bodywork"] += 1
+        elif dt in _CORROSION_TYPES:
+            stats[f"{prefix}_corrosion"] += 1
+
+    return stats
 
 
 def _ts_to_iso(val) -> str:
@@ -77,21 +141,26 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     base_price = round(raw_base / 10000, 1) if raw_base > 10000 else raw_base
     factory_price = round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory
 
-    # partDamages 추출
+    # partDamages 추출 (VehiclePart./DamageType. 접두사 제거)
     part_damages_raw = data.get("partDamages") or []
     part_damages = []
     for pd in part_damages_raw:
         if isinstance(pd, dict):
-            part = pd.get("part", "")
-            dt = pd.get("damageType") or pd.get("damage_type", "")
+            part = pd.get("part") or ""
+            dt = pd.get("damageType") or pd.get("damage_type") or ""
+            if part.startswith("VehiclePart."):
+                part = part[len("VehiclePart."):]
+            if dt.startswith("DamageType."):
+                dt = dt[len("DamageType."):]
             if part and dt:
                 part_damages.append({"part": part, "damage_type": dt})
 
-    # exchange_count / bodywork_count를 part_damages에서 재계산
-    exchange_types = {"EXCHANGE"}
-    bodywork_types = {"PAINT_PANEL_BEATING", "PANEL_WELDING"}
-    exchange_count = sum(1 for d in part_damages if d["damage_type"] in exchange_types)
-    bodywork_count = sum(1 for d in part_damages if d["damage_type"] in bodywork_types)
+    # 프레임/외부패널별 교환·판금·부식 상세 카운트
+    damage_stats = _calc_damage_stats(part_damages)
+
+    # 기존 호환용 합계
+    exchange_count = damage_stats["frame_exchange"] + damage_stats["exterior_exchange"]
+    bodywork_count = damage_stats["frame_bodywork"] + damage_stats["exterior_bodywork"]
 
     return {
         # 한글 키 (기존 호출자 호환)
@@ -124,6 +193,13 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "exchange_count": exchange_count,
         "bodywork_count": bodywork_count,
         "part_damages": part_damages,
+        # 프레임/외부패널별 상세
+        "frame_exchange": damage_stats["frame_exchange"],
+        "frame_bodywork": damage_stats["frame_bodywork"],
+        "frame_corrosion": damage_stats["frame_corrosion"],
+        "exterior_exchange": damage_stats["exterior_exchange"],
+        "exterior_bodywork": damage_stats["exterior_bodywork"],
+        "exterior_corrosion": damage_stats["exterior_corrosion"],
         "grade_score": data.get("inspectionGrade") or "",
         "accident_severity": "unknown",
         "base_price": base_price,
@@ -196,6 +272,77 @@ def estimate_option_unit_price(maker: str, model: str) -> float:
 # =========================================================================
 # 공개 API — auction_db.py와 동일한 시그니처
 # =========================================================================
+
+def search_retail_db(
+    maker: str,
+    model: str,
+    generation: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    fuel: str | None = None,
+    trim: str | None = None,
+    mileage_max: int | None = None,
+    limit: int = 100,
+    sort_by: str = "가격",
+) -> list[dict]:
+    """
+    엔카 소매가 차량 검색.
+
+    Firestore vehicles 컬렉션에서 maker + model 필터 후,
+    estimatedPurchasePrice > 0 인 차량을 Python 후처리로 추가 필터링.
+    """
+    db = get_firestore_db()
+    col = db.collection("vehicles")
+
+    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
+    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+
+    fetch_limit = min(limit * 10, 500)
+    docs = query.limit(fetch_limit).get()
+
+    results = []
+    for doc in docs:
+        data = doc.to_dict()
+
+        # 소매가 필수
+        retail_price = _safe_number(data.get("estimatedPurchasePrice"))
+        if retail_price <= 0:
+            continue
+
+        # 연식 범위
+        year = int(_safe_number(data.get("vehicleYear")))
+        if year_min and (not year or year < year_min):
+            continue
+        if year_max and (not year or year > year_max):
+            continue
+
+        # 세대 (부분 매칭)
+        if not _match_contains(data.get("generation"), generation):
+            continue
+
+        # 연료 (부분 매칭)
+        if not _match_contains(data.get("fuelType"), fuel):
+            continue
+
+        # 트림 (부분 매칭)
+        if not _match_contains(data.get("vehicleTrim"), trim):
+            continue
+
+        # 주행거리 상한
+        mileage = int(_safe_number(data.get("mileage")))
+        if mileage_max and mileage > mileage_max:
+            continue
+
+        results.append(_to_retail_dict(doc.id, data))
+
+    # 정렬
+    if sort_by == "가격":
+        results.sort(key=lambda x: x.get("소매가", 0))
+    else:
+        results.sort(key=lambda x: x.get("연식", 0), reverse=True)
+
+    return results[:limit]
+
 
 def search_auction_db(
     maker: str,
@@ -319,6 +466,15 @@ def get_vehicle_detail(auction_id: str) -> dict | None:
     return result
 
 
+def get_retail_detail(doc_id: str) -> dict | None:
+    """소매(엔카) 차량 상세 조회 — _to_retail_dict 형식 반환"""
+    db = get_firestore_db()
+    doc = db.collection("vehicles").document(doc_id).get()
+    if not doc.exists:
+        return None
+    return _to_retail_dict(doc.id, doc.to_dict())
+
+
 def get_price_stats(
     maker: str,
     model: str,
@@ -396,3 +552,370 @@ def get_price_stats(
         "max": max(prices),
         "std": round(statistics.stdev(prices), 1) if len(prices) > 1 else 0,
     }
+
+
+# =========================================================================
+# 추천 시스템 — 소매가 / 낙찰가 분리 검색
+# =========================================================================
+
+def _tokenize(text: str) -> list[str]:
+    """검색어 → 토큰 리스트 (searchTokenizer.js 호환)"""
+    if not text or not text.strip():
+        return []
+    normalized = text.lower().strip()
+    tokens = set()
+    tokens.add(normalized)
+    for word in normalized.split():
+        if word:
+            tokens.add(word)
+    for part in re.findall(r"[가-힣]+|[a-z]+|[0-9]+", normalized):
+        tokens.add(part)
+    return list(tokens)
+
+
+def _to_retail_dict(doc_id: str, data: dict) -> dict:
+    """엔카 소매가 차량용 dict"""
+    retail_price = _safe_number(data.get("estimatedPurchasePrice"))
+    if retail_price > 100000:
+        retail_price = round(retail_price / 10000, 0)
+
+    raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+    factory_price = round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory
+
+    # 옵션 문자열
+    options_raw = data.get("vehicleOptions") or []
+    if isinstance(options_raw, list) and options_raw and isinstance(options_raw[0], dict):
+        options_str = ", ".join(
+            item.get("name", "") for item in options_raw if item.get("name")
+        )
+    elif isinstance(options_raw, list):
+        options_str = ", ".join(str(o) for o in options_raw if o)
+    else:
+        options_str = str(options_raw) if options_raw else ""
+
+    # partDamages 추출 (VehiclePart./DamageType. 접두사 제거)
+    part_damages_raw = data.get("partDamages") or []
+    part_damages = []
+    for pd in part_damages_raw:
+        if isinstance(pd, dict):
+            part = pd.get("part") or ""
+            dt = pd.get("damageType") or pd.get("damage_type") or ""
+            if part.startswith("VehiclePart."):
+                part = part[len("VehiclePart."):]
+            if dt.startswith("DamageType."):
+                dt = dt[len("DamageType."):]
+            if part and dt:
+                part_damages.append({"part": part, "damage_type": dt})
+
+    damage_stats = _calc_damage_stats(part_damages)
+    exchange_count = damage_stats["frame_exchange"] + damage_stats["exterior_exchange"]
+    bodywork_count = damage_stats["frame_bodywork"] + damage_stats["exterior_bodywork"]
+
+    return {
+        "auction_id": doc_id,
+        "차명": data.get("vehicleName") or data.get("title") or "",
+        "연식": int(_safe_number(data.get("vehicleYear"))),
+        "주행거리": int(_safe_number(data.get("mileage"))),
+        "소매가": retail_price,
+        "색상": data.get("vehicleColor") or "",
+        "trim": data.get("vehicleTrim") or "",
+        "source_url": data.get("sourceUrl") or "",
+        "factory_price": factory_price,
+        "옵션": options_str,
+        "연료": data.get("fuelType") or "",
+        "source": "encar",
+        "exchange_count": exchange_count,
+        "bodywork_count": bodywork_count,
+        "part_damages": part_damages,
+        # 프레임/외부패널별 상세
+        "frame_exchange": damage_stats["frame_exchange"],
+        "frame_bodywork": damage_stats["frame_bodywork"],
+        "frame_corrosion": damage_stats["frame_corrosion"],
+        "exterior_exchange": damage_stats["exterior_exchange"],
+        "exterior_bodywork": damage_stats["exterior_bodywork"],
+        "exterior_corrosion": damage_stats["exterior_corrosion"],
+    }
+
+
+def _calc_similarity(
+    data: dict,
+    target_model: str | None,
+    target_trim: str | None,
+    target_year: int,
+    target_mileage: int,
+    target_options: list[str] | None,
+    match_count: int,
+    total_tokens: int,
+) -> float:
+    """차종 > 트림 > 연식 > 판매일 최신 > 주행거리·옵션 유사도 순 점수"""
+    score = 0.0
+
+    # 1순위: vehicleModel 매칭 (10000점)
+    v_model = (data.get("vehicleModel") or "").lower()
+    if target_model and target_model.lower() in v_model:
+        score += 10000
+
+    # 2순위: vehicleTrim 매칭 (5000점)
+    v_trim = (data.get("vehicleTrim") or "").lower()
+    if target_trim and target_trim.lower() in v_trim:
+        score += 5000
+
+    # 3순위: 연식 일치 (1000점), ±1년 (500점)
+    if target_year > 0:
+        v_year = int(_safe_number(data.get("vehicleYear")))
+        if v_year > 0:
+            year_diff = abs(v_year - target_year)
+            if year_diff == 0:
+                score += 1000
+            elif year_diff == 1:
+                score += 500
+            elif year_diff == 2:
+                score += 200
+
+    # 4순위: 판매일 최신 (최대 300점, 최근일수록 높음)
+    sale_date = data.get("saleDate") or data.get("createdAt")
+    if sale_date:
+        iso = _ts_to_iso(sale_date)
+        if iso and len(iso) >= 10:
+            try:
+                days_ago = (datetime.now(timezone.utc) - datetime.fromisoformat(iso + "T00:00:00+00:00")).days
+                score += max(0, 300 - days_ago * 0.5)  # 600일 지나면 0점
+            except (ValueError, TypeError):
+                pass
+
+    # 5순위: 주행거리 근접도 (최대 100점)
+    if target_mileage > 0:
+        v_mileage = int(_safe_number(data.get("mileage")))
+        if v_mileage > 0:
+            diff = abs(v_mileage - target_mileage)
+            score += max(0, 100 - diff / 1000)  # 10만km 차이 → 0점
+
+    # 5순위: 옵션 유사도 (최대 100점)
+    if target_options:
+        v_options = data.get("vehicleOptions") or []
+        if isinstance(v_options, list) and v_options:
+            v_opt_names = set()
+            for o in v_options:
+                if isinstance(o, dict) and o.get("name"):
+                    v_opt_names.add(o["name"].lower())
+                elif isinstance(o, str):
+                    v_opt_names.add(o.lower())
+            if v_opt_names:
+                target_set = {o.lower() for o in target_options}
+                overlap = len(target_set & v_opt_names)
+                score += (overlap / max(len(target_set), 1)) * 100
+
+    # 토큰 매칭률 보너스 (최대 50점)
+    if total_tokens > 0:
+        score += (match_count / total_tokens) * 50
+
+    return score
+
+
+def search_retail_vehicles(
+    maker: str,
+    model: str,
+    trim: str | None = None,
+    year: int | None = None,
+    mileage: int = 0,
+    options: list[str] | None = None,
+    generation: str | None = None,
+    fuel: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    엔카 활성 매물 검색 (소매가) — 2단계 전략.
+
+    1단계: vehicleModel + generation + fuelType + vehicleTrim + vehicleYear 완전 일치
+    2단계: 부족하면 vehicleTrim, vehicleYear 완화하여 추가 수집
+    """
+    db = get_firestore_db()
+    col = db.collection("vehicles")
+
+    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
+    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+
+    docs = query.limit(500).get()
+
+    # 모든 소매 차량 후보 수집 (기본 필터만)
+    all_candidates = []
+    for doc in docs:
+        data = doc.to_dict()
+
+        # 소매가(estimatedPurchasePrice)가 있고 낙찰가(actualBidPrice)가 없는 차량 = 엔카 매물
+        retail_price = _safe_number(data.get("estimatedPurchasePrice"))
+        if retail_price <= 0:
+            continue
+        if _safe_number(data.get("actualBidPrice")) > 0:
+            continue
+
+        all_candidates.append((doc.id, data))
+
+    # 1단계: 엄격 매칭 (generation + fuelType + trim + year 모두 일치)
+    strict_results = []
+    relaxed_pool = []
+
+    for doc_id, data in all_candidates:
+        is_strict = True
+
+        # generation 매칭
+        if generation:
+            v_gen = (data.get("generation") or "").lower()
+            if generation.lower() not in v_gen:
+                is_strict = False
+
+        # fuelType 매칭
+        if fuel:
+            v_fuel = (data.get("fuelType") or "").lower()
+            if fuel.lower() not in v_fuel:
+                is_strict = False
+
+        # trim 매칭
+        if trim:
+            if not _match_contains(data.get("vehicleTrim"), trim):
+                is_strict = False
+
+        # year 매칭 (±1년)
+        if year:
+            v_year = int(_safe_number(data.get("vehicleYear")))
+            if v_year and abs(v_year - year) > 1:
+                is_strict = False
+
+        item = _to_retail_dict(doc_id, data)
+        item["_score"] = _calc_similarity(
+            data, model, trim, year or 0,
+            mileage, options, 0, 0,
+        )
+
+        if is_strict:
+            strict_results.append(item)
+        else:
+            relaxed_pool.append(item)
+
+    # 2단계: 엄격 매칭이 부족하면 완화된 조건으로 보충
+    results = strict_results
+    if len(results) < limit:
+        # 완화: trim/year 다르지만 연식 ±3년 이내만
+        for item in relaxed_pool:
+            if year:
+                v_year = item.get("연식", 0)
+                if v_year and abs(v_year - year) > 3:
+                    continue
+            results.append(item)
+
+    results.sort(key=lambda x: x["_score"], reverse=True)
+
+    for r in results[:limit]:
+        r.pop("_score", None)
+
+    return results[:limit]
+
+
+def search_auction_by_tokens(
+    search_text: str,
+    target_model: str | None = None,
+    target_trim: str | None = None,
+    target_mileage: int = 0,
+    target_year: int = 0,
+    target_options: list[str] | None = None,
+    target_maker: str | None = None,
+    target_generation: str | None = None,
+    target_fuel: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    낙찰가 차량 검색 — 2단계 전략.
+
+    1단계: vehicleModel + generation + fuelType + vehicleTrim + vehicleYear 완전 일치
+    2단계: 부족하면 vehicleTrim, vehicleYear 완화하여 추가 수집
+    → 수출 제외 → 유사도 순 정렬.
+    """
+    db = get_firestore_db()
+    col = db.collection("vehicles")
+
+    maker = target_maker
+    model = target_model
+
+    if not maker or not model:
+        return []
+
+    # 1차: Firestore 쿼리 (maker + model)
+    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
+    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+    docs = query.limit(500).get()
+
+    # 모든 낙찰 차량 후보 수집 (기본 필터만)
+    all_candidates = []
+    for doc in docs:
+        data = doc.to_dict()
+
+        # 유효 낙찰가 필수
+        price = _safe_number(data.get("actualBidPrice"))
+        if price <= 0:
+            continue
+
+        # 수출 제외
+        dest = data.get("saleDestination") or ""
+        if "수출" in dest:
+            continue
+
+        all_candidates.append((doc.id, data))
+
+    # 1단계: 엄격 매칭 (generation + fuelType + trim + year 모두 일치)
+    strict_results = []
+    relaxed_pool = []
+
+    for doc_id, data in all_candidates:
+        is_strict = True
+
+        # generation 매칭
+        if target_generation:
+            v_gen = (data.get("generation") or "").lower()
+            if target_generation.lower() not in v_gen:
+                is_strict = False
+
+        # fuelType 매칭
+        if target_fuel:
+            v_fuel = (data.get("fuelType") or "").lower()
+            if target_fuel.lower() not in v_fuel:
+                is_strict = False
+
+        # trim 매칭
+        if target_trim:
+            if not _match_contains(data.get("vehicleTrim"), target_trim):
+                is_strict = False
+
+        # year 매칭 (±1년)
+        v_year = int(_safe_number(data.get("vehicleYear")))
+        if target_year > 0 and v_year > 0:
+            if abs(v_year - target_year) > 1:
+                is_strict = False
+
+        item = _to_legacy_dict(doc_id, data)
+        item["_score"] = _calc_similarity(
+            data, model, target_trim, target_year,
+            target_mileage, target_options, 0, 0,
+        )
+
+        if is_strict:
+            strict_results.append(item)
+        else:
+            relaxed_pool.append(item)
+
+    # 2단계: 엄격 매칭이 부족하면 완화된 조건으로 보충
+    results = strict_results
+    if len(results) < limit:
+        # 완화: trim/year 다르지만 연식 ±3년 이내만
+        for item in relaxed_pool:
+            v_year = item.get("연식", 0)
+            if target_year > 0 and v_year > 0:
+                if abs(v_year - target_year) > 3:
+                    continue
+            results.append(item)
+
+    results.sort(key=lambda x: x["_score"], reverse=True)
+
+    for r in results[:limit]:
+        r.pop("_score", None)
+
+    return results[:limit]

@@ -1,13 +1,13 @@
-import type { ReferenceVehicle } from "../types";
+import type { AuctionVehicle } from "../types";
 
 interface Props {
-  reference: ReferenceVehicle;
+  vehicle: AuctionVehicle;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
 export default function DeleteModal({
-  reference,
+  vehicle,
   onConfirm,
   onCancel,
 }: Props) {
@@ -22,11 +22,11 @@ export default function DeleteModal({
 
           <div className="mb-4 bg-gray-50 rounded-lg p-3">
             <p className="text-sm font-medium text-gray-800">
-              {reference.vehicle_name ?? `ID: ${reference.auction_id}`}
+              {vehicle.vehicle_name ?? `ID: ${vehicle.auction_id}`}
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
-              {reference.year}년 | {reference.mileage?.toLocaleString()}km |
-              낙찰 {reference.auction_price?.toLocaleString()}만원
+              {vehicle.year}년 | {vehicle.mileage?.toLocaleString()}km |
+              낙찰 {vehicle.auction_price?.toLocaleString()}만원
             </p>
           </div>
 

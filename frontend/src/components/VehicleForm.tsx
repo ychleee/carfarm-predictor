@@ -158,8 +158,9 @@ export default function VehicleForm({ onSubmit }: Props) {
     setLoading(true);
     try {
       const data = await recommendReferences(target);
-      if (!data.recommendations || data.recommendations.length === 0) {
-        setError(`추천 결과가 없습니다. 추론: ${data.reasoning?.slice(0, 200) ?? "없음"}`);
+      if ((!data.retail_vehicles || data.retail_vehicles.length === 0) &&
+          (!data.auction_vehicles || data.auction_vehicles.length === 0)) {
+        setError("추천 결과가 없습니다. 검색 조건을 확인해주세요.");
         return;
       }
       onSubmit(target, data);

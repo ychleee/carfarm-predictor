@@ -9,10 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 백엔드 코드 복사
 COPY backend/ ./backend/
 
-# 데이터 파일 복사 (경매 DB + 택소노미)
-COPY car_price_prediction/output/domestic_clean_data.csv ./car_price_prediction/output/
-COPY car_price_prediction/output/vehicle_taxonomy.json ./car_price_prediction/output/
-
 # 포트 설정
 ENV PORT=8080
 EXPOSE 8080

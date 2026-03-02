@@ -1,13 +1,13 @@
 import type {
   TargetVehicle,
-  ReferenceVehicle,
+  AuctionVehicle,
   CalculateResponse,
 } from "../types";
 import AdjustmentTable from "./AdjustmentTable";
 
 interface Props {
   target: TargetVehicle;
-  reference: ReferenceVehicle;
+  reference: AuctionVehicle;
   data: CalculateResponse;
   onBack: () => void;
   onReset: () => void;

@@ -19,29 +19,64 @@ export interface TargetVehicle {
   bodywork_count?: number;
 }
 
-/** 추천된 기준차량 */
-export interface ReferenceVehicle {
+/** 엔카 소매가 차량 */
+export interface RetailVehicle {
   auction_id: string;
   vehicle_name: string | null;
   year: number | null;
   mileage: number | null;
-  auction_price: number | null;
-  auction_date: string | null;
+  retail_price: number | null;   // 소매가 (만원)
   color: string | null;
-  options: string | null;
-  usage_type: string | null;
-  is_export: boolean;          // 내수(false) / 수출(true)
-  trim: string | null;         // 트림명
-  similarity_reason: string;
+  trim: string | null;
+  source_url: string | null;
+  factory_price: number | null;  // 출고가 (만원)
+  options: string | null;        // 옵션
+  fuel: string | null;           // 연료
+  // 프레임 검차
+  frame_exchange: number;
+  frame_bodywork: number;
+  frame_corrosion: number;
+  // 외부패널 검차
+  exterior_exchange: number;
+  exterior_bodywork: number;
+  exterior_corrosion: number;
+  // LLM 추천 이유
+  reason?: string | null;
 }
 
-/** 추천 응답 (POST /api/recommend 응답) */
+/** 낙찰가 차량 */
+export interface AuctionVehicle {
+  auction_id: string;
+  vehicle_name: string | null;
+  year: number | null;
+  mileage: number | null;
+  auction_price: number | null;   // 낙찰가 (만원)
+  auction_date: string | null;
+  color: string | null;
+  trim: string | null;
+  options: string | null;
+  factory_price: number | null;   // 출고가 (만원)
+  inspection_grade: string | null; // 검차등급
+  is_export: boolean;              // 수출여부
+  fuel: string | null;             // 연료
+  // 프레임 검차
+  frame_exchange: number;
+  frame_bodywork: number;
+  frame_corrosion: number;
+  // 외부패널 검차
+  exterior_exchange: number;
+  exterior_bodywork: number;
+  exterior_corrosion: number;
+  // LLM 추천 이유
+  reason?: string | null;
+}
+
+/** 추천 응답 (POST /api/recommend 응답) — 소매가/낙찰가 분리 */
 export interface RecommendResponse {
   target: TargetVehicle;
-  recommendations: ReferenceVehicle[];
-  reasoning: string;
-  tool_calls_count: number;
-  tokens_used: { input: number; output: number };
+  retail_vehicles: RetailVehicle[];    // 엔카 소매가 (최대 15)
+  auction_vehicles: AuctionVehicle[];  // 낙찰가 (최대 15)
+  reasoning?: string | null;           // LLM 전체 선별 근거
 }
 
 /** 보정 단계 */
@@ -72,18 +107,15 @@ export interface CalculateRequest {
   reference_auction_price: number;
 }
 
-/** 피드백 요청 — 전체 맥락 저장 (few-shot 학습 데이터용) */
+/** 피드백 요청 — 전체 맥락 저장 (학습 데이터용) */
 export interface FeedbackRequest {
   // 대상차량
   target_vehicle: TargetVehicle;
 
   // 추천 맥락
   selected_reference_id: string | null;
-  recommended_references: string[];              // ID 목록 (하위호환)
-  recommendations_detail: ReferenceVehicle[];    // 기준차 전체 상세
-  llm_reasoning: string | null;                  // LLM 추론 전문
-  tokens_used: { input: number; output: number } | null;
-  tool_calls_count: number | null;
+  recommended_references: string[];              // ID 목록
+  recommendations_detail: AuctionVehicle[];      // 낙찰가 기준차 상세
 
   // 가격 산출 맥락 (산출했을 경우)
   calculation_result: CalculateResponse | null;

@@ -1,4 +1,5 @@
-import type { ReferenceVehicle, CalculateResponse } from "../types";
+import type { AuctionVehicle, CalculateResponse } from "../types";
+import DamageInfo from "./DamageInfo";
 
 export interface CalcState {
   status: "idle" | "loading" | "done" | "error";
@@ -7,7 +8,7 @@ export interface CalcState {
 }
 
 interface Props {
-  reference: ReferenceVehicle;
+  vehicle: AuctionVehicle;
   index: number;
   calcState: CalcState;
   onCalc: () => void;
@@ -15,19 +16,17 @@ interface Props {
   onDelete: () => void;
 }
 
-export default function ReferenceCard({
-  reference,
+export default function AuctionCard({
+  vehicle,
   index,
   calcState,
   onCalc,
   onClick,
   onDelete,
 }: Props) {
-  const r = reference;
+  const v = vehicle;
 
-  const optionList = r.options?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
-  const displayOptions = optionList.slice(0, 5);
-  const moreCount = optionList.length - displayOptions.length;
+  const optionList = v.options?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
 
   const hasPriceResult = calcState.status === "done" && calcState.data;
 
@@ -40,7 +39,7 @@ export default function ReferenceCard({
             #{index + 1}
           </span>
           <h4 className="text-sm font-semibold text-gray-900">
-            {r.vehicle_name ?? `차량 ${r.auction_id}`}
+            {v.vehicle_name ?? `차량 ${v.auction_id}`}
           </h4>
         </div>
         <button
@@ -53,47 +52,64 @@ export default function ReferenceCard({
       </div>
 
       {/* 스펙 한 줄 */}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 mb-2">
-        <span>{r.year}년</span>
-        <span>{r.mileage?.toLocaleString()}km</span>
-        {r.color && <span>{r.color}</span>}
-        {r.trim && <span className="font-medium text-gray-700">{r.trim}</span>}
-        <span className={`font-medium px-1.5 py-0.5 rounded ${r.is_export ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
-          {r.is_export ? "수출" : "내수"}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 mb-1">
+        <span>{v.year}년</span>
+        <span>{v.mileage?.toLocaleString()}km</span>
+        {v.color && <span>{v.color}</span>}
+        {v.trim && <span className="font-medium text-gray-700">{v.trim}</span>}
+        {v.fuel && <span>{v.fuel}</span>}
+        {v.inspection_grade && (
+          <span className="font-medium text-gray-600">{v.inspection_grade}</span>
+        )}
+        {v.is_export && (
+          <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">수출</span>
+        )}
+      </div>
+
+      {/* 검차 상태 (프레임/외판) */}
+      <DamageInfo
+        frame={{ exchange: v.frame_exchange, bodywork: v.frame_bodywork, corrosion: v.frame_corrosion }}
+        exterior={{ exchange: v.exterior_exchange, bodywork: v.exterior_bodywork, corrosion: v.exterior_corrosion }}
+      />
+
+      {/* 출고가 · 판매일 */}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-400 mb-2">
+        {v.factory_price != null && v.factory_price > 0 && (
+          <span>출고가 {v.factory_price.toLocaleString()}만원</span>
+        )}
+        {v.auction_date && <span>판매일 {v.auction_date}</span>}
+      </div>
+
+      {/* 낙찰가 */}
+      <div className="flex items-center gap-3 mb-2">
+        <span className="font-medium text-red-600 text-sm">
+          낙찰가 {v.auction_price?.toLocaleString()}만원
         </span>
-        <span className="font-medium text-blue-600">
-          낙찰 {r.auction_price?.toLocaleString()}만원
-        </span>
-        {r.auction_date && <span>{r.auction_date}</span>}
       </div>
 
       {/* 옵션 태그 */}
-      {displayOptions.length > 0 && (
+      {optionList.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-2">
-          {displayOptions.map((opt) => (
+          {optionList.map((opt, i) => (
             <span
-              key={opt}
-              className="bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded"
+              key={i}
+              className="text-[10px] text-gray-600 bg-gray-100 border border-gray-200 px-1.5 py-0.5 rounded"
             >
               {opt}
             </span>
           ))}
-          {moreCount > 0 && (
-            <span className="text-xs text-gray-400">+{moreCount}개</span>
-          )}
         </div>
       )}
 
-      {/* 선택 이유 */}
-      <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-3">
-        <p className="text-xs font-medium text-blue-700 mb-1">선택 이유</p>
-        <p className="text-sm text-blue-900 leading-relaxed">
-          {r.similarity_reason}
+      {/* LLM 추천 이유 */}
+      {v.reason && (
+        <p className="text-[11px] text-gray-400 mb-2 leading-relaxed">
+          {v.reason}
         </p>
-      </div>
+      )}
 
       {/* 가격 산출 영역 */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 mt-3">
         {calcState.status === "idle" && (
           <button
             onClick={(e) => { e.stopPropagation(); onCalc(); }}

@@ -2,13 +2,14 @@ import { useState } from "react";
 import type {
   TargetVehicle,
   RecommendResponse,
-  ReferenceVehicle,
+  RetailVehicle,
+  AuctionVehicle,
   CalculateResponse,
 } from "../types";
 import { calculatePrice, recommendReferences, submitFeedback } from "../api/client";
-import ReasoningPanel from "./ReasoningPanel";
-import ReferenceCard from "./ReferenceCard";
-import type { CalcState } from "./ReferenceCard";
+import RetailCard from "./RetailCard";
+import AuctionCard from "./AuctionCard";
+import type { CalcState } from "./AuctionCard";
 import PriceDetailModal from "./PriceDetailModal";
 import DeleteModal from "./DeleteModal";
 
@@ -23,17 +24,19 @@ export default function RecommendationResult({
   data,
   onBack,
 }: Props) {
-  const [cards, setCards] = useState<ReferenceVehicle[]>(data.recommendations);
+  const [retailCards, setRetailCards] = useState<RetailVehicle[]>(data.retail_vehicles);
+  const [auctionCards, setAuctionCards] = useState<AuctionVehicle[]>(data.auction_vehicles);
   const [calcStates, setCalcStates] = useState<Record<string, CalcState>>({});
-  const [deleteTarget, setDeleteTarget] = useState<ReferenceVehicle | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AuctionVehicle | null>(null);
   const [detailTarget, setDetailTarget] = useState<{
-    ref: ReferenceVehicle;
+    ref: AuctionVehicle;
     calc: CalculateResponse;
   } | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
 
-  const handleCalc = async (ref: ReferenceVehicle) => {
+  const handleCalc = async (ref: AuctionVehicle) => {
     if (!ref.auction_price) return;
     setCalcStates((prev) => ({
       ...prev,
@@ -60,7 +63,7 @@ export default function RecommendationResult({
     }
   };
 
-  const handleCardClick = (ref: ReferenceVehicle) => {
+  const handleCardClick = (ref: AuctionVehicle) => {
     const state = calcStates[ref.auction_id];
     if (state?.status === "done" && state.data) {
       setDetailTarget({ ref, calc: state.data });
@@ -69,7 +72,7 @@ export default function RecommendationResult({
 
   const handleDeleteConfirm = () => {
     if (!deleteTarget) return;
-    setCards((prev) => prev.filter((c) => c.auction_id !== deleteTarget.auction_id));
+    setAuctionCards((prev) => prev.filter((c) => c.auction_id !== deleteTarget.auction_id));
     setDeleteTarget(null);
   };
 
@@ -77,12 +80,16 @@ export default function RecommendationResult({
     setLoadingMore(true);
     setError(null);
     try {
-      const currentIds = cards.map((c) => c.auction_id);
+      const currentIds = [
+        ...retailCards.map((c) => c.auction_id),
+        ...auctionCards.map((c) => c.auction_id),
+      ];
       const moreData = await recommendReferences(target, currentIds);
-      if (moreData.recommendations.length === 0) {
+      if (moreData.retail_vehicles.length === 0 && moreData.auction_vehicles.length === 0) {
         setError("추가 추천할 차량이 없습니다.");
       } else {
-        setCards((prev) => [...prev, ...moreData.recommendations]);
+        setRetailCards((prev) => [...prev, ...moreData.retail_vehicles]);
+        setAuctionCards((prev) => [...prev, ...moreData.auction_vehicles]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "추가 추천 실패");
@@ -105,17 +112,23 @@ export default function RecommendationResult({
         {target.color && <span>| {target.color}</span>}
       </div>
 
-      {/* LLM 추론 과정 */}
-      <ReasoningPanel
-        reasoning={data.reasoning}
-        toolCallsCount={data.tool_calls_count}
-        tokensUsed={data.tokens_used}
-      />
-
-      {/* 기준차량 카드 목록 */}
-      <h3 className="text-base font-semibold text-gray-900 mb-3">
-        추천 기준차량 ({cards.length}건)
-      </h3>
+      {/* LLM 선별 근거 */}
+      {data.reasoning && (
+        <div className="mb-4 border border-blue-200 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setReasoningOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-4 py-2.5 bg-blue-50 hover:bg-blue-100 transition-colors text-sm text-blue-800 font-medium"
+          >
+            <span>AI 선별 근거</span>
+            <span className="text-blue-500 text-xs">{reasoningOpen ? "접기" : "펼치기"}</span>
+          </button>
+          {reasoningOpen && (
+            <div className="px-4 py-3 text-sm text-gray-700 whitespace-pre-wrap bg-white">
+              {data.reasoning}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
@@ -123,11 +136,34 @@ export default function RecommendationResult({
         </div>
       )}
 
+      {/* 엔카 소매가 섹션 */}
+      {retailCards.length > 0 && (
+        <>
+          <h3 className="text-base font-semibold text-gray-900 mb-3">
+            <span className="text-green-700">엔카 소매가</span> ({retailCards.length}건)
+          </h3>
+          <div className="flex flex-col gap-3 mb-6">
+            {retailCards.map((v, i) => (
+              <RetailCard
+                key={v.auction_id}
+                vehicle={v}
+                index={i}
+                onDelete={() => setRetailCards((prev) => prev.filter((c) => c.auction_id !== v.auction_id))}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* 낙찰가 섹션 */}
+      <h3 className="text-base font-semibold text-gray-900 mb-3">
+        <span className="text-blue-700">낙찰가</span> ({auctionCards.length}건)
+      </h3>
       <div className="flex flex-col gap-3 mb-4">
-        {cards.map((ref, i) => (
-          <ReferenceCard
+        {auctionCards.map((ref, i) => (
+          <AuctionCard
             key={ref.auction_id}
-            reference={ref}
+            vehicle={ref}
             index={i}
             calcState={calcStates[ref.auction_id] ?? { status: "idle" }}
             onCalc={() => handleCalc(ref)}
@@ -150,7 +186,7 @@ export default function RecommendationResult({
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              LLM 추론 중...
+              검색 중...
             </span>
           ) : (
             "+ 추가 추천 받기"
@@ -167,7 +203,7 @@ export default function RecommendationResult({
       {/* 삭제 모달 */}
       {deleteTarget && (
         <DeleteModal
-          reference={deleteTarget}
+          vehicle={deleteTarget}
           onConfirm={handleDeleteConfirm}
           onCancel={() => setDeleteTarget(null)}
         />
@@ -184,11 +220,8 @@ export default function RecommendationResult({
             submitFeedback({
               target_vehicle: target,
               selected_reference_id: detailTarget.ref.auction_id,
-              recommended_references: cards.map((c) => c.auction_id),
-              recommendations_detail: cards,
-              llm_reasoning: data.reasoning,
-              tokens_used: data.tokens_used,
-              tool_calls_count: data.tool_calls_count,
+              recommended_references: auctionCards.map((c) => c.auction_id),
+              recommendations_detail: auctionCards,
               calculation_result: detailTarget.calc,
               estimated_price: detailTarget.calc.estimated_retail,
               actual_price: null,
