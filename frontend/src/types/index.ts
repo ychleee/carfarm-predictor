@@ -32,6 +32,17 @@ export interface RetailVehicle {
   factory_price: number | null;  // 출고가 (만원)
   options: string | null;        // 옵션
   fuel: string | null;           // 연료
+  region: string | null;         // 지역
+  displacement: number | null;   // 배기량 (cc)
+  listing_date: string | null;   // 매물등록일
+  has_accident_record: boolean;  // 사고이력 조회 가능
+  seizing_count: number;         // 압류 건수
+  pledge_count: number;          // 저당 건수
+  has_diagnosis: boolean;        // 엔카 진단
+  has_inspection: boolean;       // 성능검사
+  view_count: number;            // 조회수
+  accident_summary: string | null;    // 사고이력 요약
+  inspection_summary: string | null;  // 성능검사 요약
   // 프레임 검차
   frame_exchange: number;
   frame_bodywork: number;

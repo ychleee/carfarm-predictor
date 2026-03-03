@@ -204,6 +204,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "accident_severity": "unknown",
         "base_price": base_price,
         "factory_price": factory_price,
+        "company_id": data.get("companyId") or "",
     }
 
 
@@ -288,21 +289,32 @@ def search_retail_db(
     """
     엔카 소매가 차량 검색.
 
-    Firestore vehicles 컬렉션에서 maker + model 필터 후,
-    estimatedPurchasePrice > 0 인 차량을 Python 후처리로 추가 필터링.
+    searchTokens 필드의 array-contains로 모델명 검색 후,
+    maker를 Python 후처리로 필터링.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
 
-    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
-    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+    model_lower = model.lower().strip() if model else ""
+    maker_lower = maker.lower().strip() if maker else ""
 
-    fetch_limit = min(limit * 10, 500)
+    if model_lower:
+        query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
+    else:
+        query = col
+
+    fetch_limit = min(limit * 10, 5000)
     docs = query.limit(fetch_limit).get()
 
     results = []
     for doc in docs:
         data = doc.to_dict()
+
+        # maker 필터 (Python 후처리)
+        if maker_lower:
+            vehicle_maker = (data.get("vehicleMaker") or "").lower()
+            if vehicle_maker != maker_lower:
+                continue
 
         # 소매가 필수
         retail_price = _safe_number(data.get("estimatedPurchasePrice"))
@@ -356,36 +368,47 @@ def search_auction_db(
     mileage_max: int | None = None,
     usage: str | None = None,
     domestic_only: bool = True,
-    limit: int = 30,
+    limit: int = 500,
     sort_by: str = "날짜",
 ) -> list[dict]:
     """
     Firestore vehicles 컬렉션에서 조건 검색.
 
-    Firestore 쿼리로 maker + model 필터링 후,
-    나머지 조건은 Python 후처리로 적용 (Firestore 복합 쿼리 제한 대응).
+    searchTokens 필드의 array-contains로 모델명 검색 후,
+    maker를 Python 후처리로 필터링.
+    모든 companyId 데이터를 빠짐없이 가져오기 위해 전체 스캔.
+    최근 3개월 데이터 우선 정렬.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
 
-    # 1차: Firestore 쿼리 (maker + model만 — 복합인덱스 불필요)
-    # 정렬과 추가 필터는 Python 후처리로 수행
-    query = col.where(filter=FieldFilter("vehicleMaker", "==", maker))
-    query = query.where(filter=FieldFilter("vehicleModel", "==", model))
+    model_lower = model.lower().strip() if model else ""
+    maker_lower = maker.lower().strip() if maker else ""
 
-    # 넉넉히 가져와서 후처리 (최대 500건)
-    fetch_limit = min(limit * 10, 500)
-    docs = query.limit(fetch_limit).get()
+    if model_lower:
+        query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
+    else:
+        query = col
+
+    # saleDate 내림차순 (최근 판매일 우선)
+    query = query.order_by("saleDate", direction="DESCENDING")
+    docs = query.get()
 
     # 2차: Python 후처리 필터
     results = []
     for doc in docs:
         data = doc.to_dict()
 
+        # maker 필터 (Python 후처리)
+        if maker_lower:
+            vehicle_maker = (data.get("vehicleMaker") or "").lower()
+            if vehicle_maker != maker_lower:
+                continue
+
         # 유효 낙찰가 필터
         price = data.get("actualBidPrice")
         try:
-            price = float(price) if price else 0
+            price = float(str(price).replace(",", "")) if price else 0
         except (ValueError, TypeError):
             price = 0
         if price <= 0:
@@ -440,11 +463,12 @@ def search_auction_db(
         for r in results:
             r["option_unit_price"] = unit_price
 
-    # Python 정렬
+    # 정렬: Firestore에서 saleDate DESC로 가져왔으므로 기본 날짜순 유지
     if sort_by == "가격":
         results.sort(key=lambda x: x.get("낙찰가", 0), reverse=True)
     else:
-        results.sort(key=lambda x: x.get("개최일", ""), reverse=True)
+        # 판매일 내림차순 (최신 우선)
+        results.sort(key=lambda x: x.get("개최일", "") or "", reverse=True)
 
     return results[:limit]
 
@@ -623,6 +647,8 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "factory_price": factory_price,
         "옵션": options_str,
         "연료": data.get("fuelType") or "",
+        "매물등록일": _ts_to_iso(data.get("createdAt")),
+        "검차일": data.get("inspectionScheduleDate") or "",
         "source": "encar",
         "exchange_count": exchange_count,
         "bodywork_count": bodywork_count,

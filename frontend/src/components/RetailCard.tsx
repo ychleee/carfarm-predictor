@@ -17,8 +17,11 @@ export default function RetailCard({ vehicle, index, onDelete }: Props) {
       : null;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 hover:border-green-300 hover:shadow-md transition-all">
-      {/* 헤더: 번호 + 차명 + 삭제 */}
+    <div
+      className="bg-white border border-gray-200 rounded-xl p-5 hover:border-green-300 hover:shadow-md transition-all cursor-pointer"
+      onClick={() => v.source_url && window.open(v.source_url, "_blank")}
+    >
+      {/* 헤더: 번호 + 차명 + 엔카진단/삭제 */}
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-start gap-2 min-w-0">
           <span className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded shrink-0">
@@ -28,13 +31,20 @@ export default function RetailCard({ vehicle, index, onDelete }: Props) {
             {v.vehicle_name ?? `차량 ${v.auction_id}`}
           </h4>
         </div>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="text-gray-300 hover:text-red-500 text-lg leading-none shrink-0 transition-colors"
-          title="삭제"
-        >
-          &times;
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {v.has_diagnosis && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500 text-white">
+              엔카진단
+            </span>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="text-gray-300 hover:text-red-500 text-lg leading-none transition-colors"
+            title="삭제"
+          >
+            &times;
+          </button>
+        </div>
       </div>
 
       {/* 스펙 한 줄 */}
@@ -44,6 +54,41 @@ export default function RetailCard({ vehicle, index, onDelete }: Props) {
         {v.color && <span>{v.color}</span>}
         {v.trim && <span className="font-medium text-gray-700">{v.trim}</span>}
         {v.fuel && <span>{v.fuel}</span>}
+        {v.displacement != null && v.displacement > 0 && (
+          <span>{v.displacement.toLocaleString()}cc</span>
+        )}
+        {v.region && <span>{v.region}</span>}
+      </div>
+
+      {/* 사고이력 요약 */}
+      {v.accident_summary && (
+        <div className="flex items-center gap-1.5 text-xs mb-2">
+          <span className={`font-medium ${v.accident_summary === "무사고" ? "text-emerald-600" : "text-red-600"}`}>
+            {v.accident_summary === "무사고" ? "무사고" : "보험이력"}
+          </span>
+          {v.accident_summary !== "무사고" && (
+            <span className="text-gray-500">{v.accident_summary}</span>
+          )}
+        </div>
+      )}
+
+      {/* 상태 배지: 압류/저당 · 등록일 · 조회수 */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {(v.seizing_count > 0 || v.pledge_count > 0) && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-50 text-orange-600 border border-orange-200">
+            압류{v.seizing_count} 저당{v.pledge_count}
+          </span>
+        )}
+        {v.listing_date && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-50 text-gray-500 border border-gray-200">
+            등록 {v.listing_date}
+          </span>
+        )}
+        {v.view_count > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-50 text-gray-500 border border-gray-200">
+            조회 {v.view_count.toLocaleString()}
+          </span>
+        )}
       </div>
 
       {/* 검차 상태 (프레임/외판) */}
@@ -66,16 +111,6 @@ export default function RetailCard({ vehicle, index, onDelete }: Props) {
           <span className="text-xs text-gray-500 font-medium">
             신차대비 {ratioPercent}%
           </span>
-        )}
-        {v.source_url && (
-          <a
-            href={v.source_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-500 hover:underline"
-          >
-            매물 보기
-          </a>
         )}
       </div>
 
