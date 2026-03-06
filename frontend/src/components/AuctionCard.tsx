@@ -1,4 +1,4 @@
-import type { AuctionVehicle, CalculateResponse } from "../types";
+import type { AuctionVehicle, CompanyTab, CalculateResponse } from "../types";
 import DamageInfo from "./DamageInfo";
 
 export interface CalcState {
@@ -11,6 +11,7 @@ interface Props {
   vehicle: AuctionVehicle;
   index: number;
   calcState: CalcState;
+  companyTab?: CompanyTab;
   onCalc: () => void;
   onClick: () => void;
   onDelete: () => void;
@@ -20,6 +21,7 @@ export default function AuctionCard({
   vehicle,
   index,
   calcState,
+  companyTab,
   onCalc,
   onClick,
   onDelete,
@@ -30,14 +32,23 @@ export default function AuctionCard({
 
   const hasPriceResult = calcState.status === "done" && calcState.data;
 
+  // 회사 태그 색상
+  const badgeBg = companyTab?.bgClass ?? "bg-blue-100";
+  const badgeText = companyTab?.textClass ?? "text-blue-700";
+
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
-      {/* 헤더: 번호 + 차명 + 삭제 */}
+      {/* 헤더: 번호 + 회사 태그 + 차명 + 삭제 */}
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-start gap-2 min-w-0">
-          <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded shrink-0">
+          <span className={`${badgeBg} ${badgeText} text-xs font-bold px-2 py-0.5 rounded shrink-0`}>
             #{index + 1}
           </span>
+          {companyTab && (
+            <span className={`${badgeBg} ${badgeText} text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0`}>
+              {companyTab.label}
+            </span>
+          )}
           <h4 className="text-sm font-semibold text-gray-900">
             {v.vehicle_name ?? `차량 ${v.auction_id}`}
           </h4>

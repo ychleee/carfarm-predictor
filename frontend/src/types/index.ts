@@ -19,45 +19,10 @@ export interface TargetVehicle {
   bodywork_count?: number;
 }
 
-/** 엔카 소매가 차량 */
-export interface RetailVehicle {
-  auction_id: string;
-  vehicle_name: string | null;
-  year: number | null;
-  mileage: number | null;
-  retail_price: number | null;   // 소매가 (만원)
-  color: string | null;
-  trim: string | null;
-  source_url: string | null;
-  factory_price: number | null;  // 출고가 (만원)
-  options: string | null;        // 옵션
-  fuel: string | null;           // 연료
-  region: string | null;         // 지역
-  displacement: number | null;   // 배기량 (cc)
-  listing_date: string | null;   // 매물등록일
-  has_accident_record: boolean;  // 사고이력 조회 가능
-  seizing_count: number;         // 압류 건수
-  pledge_count: number;          // 저당 건수
-  has_diagnosis: boolean;        // 엔카 진단
-  has_inspection: boolean;       // 성능검사
-  view_count: number;            // 조회수
-  accident_summary: string | null;    // 사고이력 요약
-  inspection_summary: string | null;  // 성능검사 요약
-  // 프레임 검차
-  frame_exchange: number;
-  frame_bodywork: number;
-  frame_corrosion: number;
-  // 외부패널 검차
-  exterior_exchange: number;
-  exterior_bodywork: number;
-  exterior_corrosion: number;
-  // LLM 추천 이유
-  reason?: string | null;
-}
-
 /** 낙찰가 차량 */
 export interface AuctionVehicle {
   auction_id: string;
+  company_id?: string;
   vehicle_name: string | null;
   year: number | null;
   mileage: number | null;
@@ -68,7 +33,7 @@ export interface AuctionVehicle {
   options: string | null;
   factory_price: number | null;   // 출고가 (만원)
   inspection_grade: string | null; // 검차등급
-  is_export: boolean;              // 수출여부
+  is_export?: boolean;             // 수출여부
   fuel: string | null;             // 연료
   // 프레임 검차
   frame_exchange: number;
@@ -82,12 +47,63 @@ export interface AuctionVehicle {
   reason?: string | null;
 }
 
-/** 추천 응답 (POST /api/recommend 응답) — 소매가/낙찰가 분리 */
-export interface RecommendResponse {
-  target: TargetVehicle;
-  retail_vehicles: RetailVehicle[];    // 엔카 소매가 (최대 15)
-  auction_vehicles: AuctionVehicle[];  // 낙찰가 (최대 15)
-  reasoning?: string | null;           // LLM 전체 선별 근거
+/** search-auction 응답 */
+export interface SearchAuctionResponse {
+  count: number;
+  results: AuctionVehicle[];
+}
+
+/** 회사 탭 정보 */
+export interface CompanyTab {
+  id: string;
+  label: string;
+  color: string;        // tailwind color prefix (e.g. "green", "orange", "purple")
+  bgClass: string;       // 배지 bg
+  textClass: string;     // 배지 text
+}
+
+export const COMPANY_TABS: CompanyTab[] = [
+  {
+    id: "KYMaGfcnzwGsvbDm6Z91",
+    label: "엔카",
+    color: "green",
+    bgClass: "bg-green-100",
+    textClass: "text-green-700",
+  },
+  {
+    id: "cRFWlHv4PZczXpd8bEw2",
+    label: "헤이딜러",
+    color: "orange",
+    bgClass: "bg-orange-100",
+    textClass: "text-orange-700",
+  },
+  {
+    id: "vF8hj91n0tgzqUfWsuvJ",
+    label: "셀카",
+    color: "purple",
+    bgClass: "bg-purple-100",
+    textClass: "text-purple-700",
+  },
+];
+
+/** 필터 인터페이스 */
+export interface AuctionFilters {
+  trim: string;
+  fuel: string;
+  color: string;
+  yearMin: number | null;
+  yearMax: number | null;
+  mileageMin: number | null;
+  mileageMax: number | null;
+}
+
+/** 필터 옵션 (데이터에서 추출) */
+export interface FilterOptions {
+  trims: string[];
+  fuels: string[];
+  colors: string[];
+  yearRange: [number, number];
+  mileageRange: [number, number];
 }
 
 /** 보정 단계 */

@@ -3,21 +3,16 @@
 
 api.encar.com의 List API를 사용하여 실시간 매물 검색.
 Detail API + 사고이력 + 성능검사 + 옵션 매핑으로 상세 정보 보강.
-Firestore 영구 캐시 + 재시도 로직으로 안정성 확보.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import time
 from urllib.parse import quote
 
 import httpx
-
-from app.services.firestore_client import get_firestore_db
 
 logger = logging.getLogger(__name__)
 
@@ -33,64 +28,6 @@ _LIST_RETRY_DELAY = 1.5  # 초
 _PAGE_DELAY = 0.3  # 페이지 간 딜레이 (초)
 _DETAIL_MAX_RETRIES = 2
 _DETAIL_RETRY_DELAY = 0.5
-
-_CACHE_TTL = 259200  # 3일
-_CACHE_COLLECTION = "_encar_cache"
-
-# ── 검색 결과 캐시 (Firestore 영구 + 인메모리 보조) ──
-
-_mem_cache: dict[str, tuple[float, list[dict]]] = {}
-
-
-def _cache_key(maker: str, model: str, year_min: int | None, year_max: int | None,
-               fuel: str | None, trim: str | None, mileage_max: int | None,
-               limit: int, sort_by: str) -> str:
-    raw = f"{maker}|{model}|{year_min}|{year_max}|{fuel}|{trim}|{mileage_max}|{limit}|{sort_by}"
-    return hashlib.md5(raw.encode()).hexdigest()
-
-
-def _get_cached(key: str) -> list[dict] | None:
-    now = time.time()
-
-    # 1) 인메모리 확인
-    if key in _mem_cache:
-        ts, data = _mem_cache[key]
-        if now - ts < _CACHE_TTL:
-            logger.info("캐시 히트(메모리): %d건", len(data))
-            return data
-        del _mem_cache[key]
-
-    # 2) Firestore 확인
-    try:
-        db = get_firestore_db()
-        doc = db.collection(_CACHE_COLLECTION).document(key).get()
-        if doc.exists:
-            d = doc.to_dict()
-            ts = d.get("ts", 0)
-            if now - ts < _CACHE_TTL:
-                data = json.loads(d["data"])
-                _mem_cache[key] = (ts, data)
-                logger.info("캐시 히트(Firestore): %d건", len(data))
-                return data
-    except Exception as e:
-        logger.warning("캐시 읽기 실패: %s", e)
-
-    return None
-
-
-def _set_cache(key: str, data: list[dict]) -> None:
-    now = time.time()
-    _mem_cache[key] = (now, data)
-
-    # Firestore에 저장
-    try:
-        db = get_firestore_db()
-        db.collection(_CACHE_COLLECTION).document(key).set({
-            "ts": now,
-            "data": json.dumps(data, ensure_ascii=False),
-        })
-    except Exception as e:
-        logger.warning("캐시 저장 실패: %s", e)
 
 
 # ── 연료 동의어 매핑 (엔카 FuelType 기준) ──
@@ -201,17 +138,11 @@ def search_encar_retail(
     limit: int = 200,
     sort_by: str = "가격",
 ) -> list[dict]:
-    """엔카 List API 페이지네이션 검색 (캐시 + 재시도)."""
+    """엔카 List API 페이지네이션 검색 (재시도)."""
     keyword_lower = model_keyword.lower().strip()
     normalized_fuel = _normalize_fuel(fuel)
     fuel_lower = normalized_fuel.lower() if normalized_fuel else None
     trim_lower = trim.lower().strip() if trim else None
-
-    # 캐시 확인
-    ckey = _cache_key(maker, model_keyword, year_min, year_max, fuel, trim, mileage_max, limit, sort_by)
-    cached = _get_cached(ckey)
-    if cached is not None:
-        return cached
 
     # DSL 빌드: Manufacturer 필수 + FuelType/Year.range/Mileage.range 선택
     dsl_parts = ["Hidden.N", "CarType.Y", f"Manufacturer.{maker}"]
@@ -288,9 +219,7 @@ def search_encar_retail(
     else:
         results.sort(key=lambda x: x.get("year") or 0, reverse=True)
 
-    final = results[:limit]
-    _set_cache(ckey, final)
-    return final
+    return results[:limit]
 
 
 # ── Detail + 사고이력 + 성능검사 보강 ──

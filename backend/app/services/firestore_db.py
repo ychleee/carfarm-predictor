@@ -208,6 +208,18 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     }
 
 
+_FUEL_SYNONYMS = {
+    "가솔린": {"휘발유", "가솔린", "gasoline"},
+    "휘발유": {"휘발유", "가솔린", "gasoline"},
+    "디젤": {"경유", "디젤", "diesel"},
+    "경유": {"경유", "디젤", "diesel"},
+    "LPG": {"LPG", "lpg", "엘피지"},
+    "엘피지": {"LPG", "lpg", "엘피지"},
+    "하이브리드": {"하이브리드", "hybrid"},
+    "전기": {"전기", "electric", "EV"},
+}
+
+
 def _match_contains(value: str | None, keyword: str | None) -> bool:
     """대소문자 무시 부분 문자열 매칭"""
     if not keyword:
@@ -215,6 +227,23 @@ def _match_contains(value: str | None, keyword: str | None) -> bool:
     if not value:
         return False
     return keyword.lower() in value.lower()
+
+
+def _match_fuel(value: str | None, keyword: str | None) -> bool:
+    """연료 동의어를 포함한 매칭 (가솔린↔휘발유, 디젤↔경유 등)"""
+    if not keyword:
+        return True
+    if not value:
+        return False
+    # 일반 매칭
+    if keyword.lower() in value.lower():
+        return True
+    # 동의어 매칭
+    synonyms = _FUEL_SYNONYMS.get(keyword)
+    if synonyms:
+        val_lower = value.lower()
+        return any(s.lower() in val_lower for s in synonyms)
+    return False
 
 
 # =========================================================================
@@ -333,7 +362,7 @@ def search_retail_db(
             continue
 
         # 연료 (부분 매칭)
-        if not _match_contains(data.get("fuelType"), fuel):
+        if not _match_fuel(data.get("fuelType"), fuel):
             continue
 
         # 트림 (부분 매칭)
@@ -370,14 +399,14 @@ def search_auction_db(
     domestic_only: bool = True,
     limit: int = 500,
     sort_by: str = "날짜",
+    company_id: str | None = None,
 ) -> list[dict]:
     """
     Firestore vehicles 컬렉션에서 조건 검색.
 
     searchTokens 필드의 array-contains로 모델명 검색 후,
     maker를 Python 후처리로 필터링.
-    모든 companyId 데이터를 빠짐없이 가져오기 위해 전체 스캔.
-    최근 3개월 데이터 우선 정렬.
+    company_id 지정 시 해당 회사 데이터만 반환.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
@@ -385,19 +414,38 @@ def search_auction_db(
     model_lower = model.lower().strip() if model else ""
     maker_lower = maker.lower().strip() if maker else ""
 
-    if model_lower:
-        query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
-    else:
-        query = col
+    # companyId를 Firestore 쿼리 레벨로 필터 (인덱스 빌드 중이면 Python fallback)
+    use_company_filter_in_query = False
+    try:
+        if company_id:
+            query = col.where(filter=FieldFilter("companyId", "==", company_id))
+        else:
+            query = col
 
-    # saleDate 내림차순 (최근 판매일 우선)
-    query = query.order_by("saleDate", direction="DESCENDING")
-    docs = query.get()
+        if model_lower:
+            query = query.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
+
+        query = query.order_by("saleDate", direction="DESCENDING")
+        docs = list(query.get())
+        use_company_filter_in_query = True
+    except Exception:
+        # 인덱스 빌드 중 등 오류 시 기존 방식으로 fallback
+        if model_lower:
+            query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
+        else:
+            query = col
+        query = query.order_by("saleDate", direction="DESCENDING")
+        docs = list(query.get())
 
     # 2차: Python 후처리 필터
     results = []
     for doc in docs:
         data = doc.to_dict()
+
+        # companyId 필터 (Firestore 쿼리에서 처리하지 못한 경우)
+        if company_id and not use_company_filter_in_query:
+            if (data.get("companyId") or "") != company_id:
+                continue
 
         # maker 필터 (Python 후처리)
         if maker_lower:
@@ -426,7 +474,7 @@ def search_auction_db(
             continue
 
         # 연료 (부분 매칭)
-        if not _match_contains(data.get("fuelType"), fuel):
+        if not _match_fuel(data.get("fuelType"), fuel):
             continue
 
         # 구동방식 (부분 매칭)

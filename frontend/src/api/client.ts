@@ -1,9 +1,8 @@
 import type {
-  TargetVehicle,
-  RecommendResponse,
   CalculateRequest,
   CalculateResponse,
   FeedbackRequest,
+  SearchAuctionResponse,
   ModelInfo,
   GenerationInfo,
   VariantInfo,
@@ -28,19 +27,22 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// === 추천 ===
+// === 경매 검색 ===
 
-export async function recommendReferences(
-  target: TargetVehicle,
-  excludeIds?: string[]
-): Promise<RecommendResponse> {
-  const body = excludeIds?.length
-    ? { ...target, exclude_auction_ids: excludeIds }
-    : target;
-  return request<RecommendResponse>("/recommend", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export async function searchAuction(params: {
+  maker: string;
+  model: string;
+  company_id: string;
+  generation?: string;
+  limit?: number;
+}): Promise<SearchAuctionResponse> {
+  const query = new URLSearchParams();
+  query.set("company_id", params.company_id);
+  query.set("maker", params.maker);
+  query.set("model", params.model);
+  if (params.generation) query.set("generation", params.generation);
+  if (params.limit) query.set("limit", String(params.limit));
+  return request<SearchAuctionResponse>(`/search-auction?${query.toString()}`);
 }
 
 // === 가격 산출 ===

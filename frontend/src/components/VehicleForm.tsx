@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
-import type { TargetVehicle, RecommendResponse } from "../types";
+import type { TargetVehicle } from "../types";
 import {
   getMakers,
   getModels,
   getGenerations,
   getVariants,
   getTrims,
-  recommendReferences,
 } from "../api/client";
 import type { ModelInfo, GenerationInfo, VariantInfo } from "../types";
 
@@ -18,7 +17,7 @@ const USAGE_OPTIONS = [
 const PREFERRED_OPTIONS = ["선루프", "스마트키", "네비", "후방카메라"];
 
 interface Props {
-  onSubmit: (target: TargetVehicle, data: RecommendResponse) => void;
+  onSubmit: (target: TargetVehicle) => void;
 }
 
 export default function VehicleForm({ onSubmit }: Props) {
@@ -46,7 +45,6 @@ export default function VehicleForm({ onSubmit }: Props) {
   const [bodyworkCount, setBodyworkCount] = useState(0);
 
   // UI 상태
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // 제작사 목록 로드
@@ -131,7 +129,7 @@ export default function VehicleForm({ onSubmit }: Props) {
     );
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!maker || !model || !year || !mileage) {
       setError("제작사, 모델, 연식, 주행거리는 필수입니다.");
       return;
@@ -155,21 +153,7 @@ export default function VehicleForm({ onSubmit }: Props) {
     };
 
     setError(null);
-    setLoading(true);
-    try {
-      const data = await recommendReferences(target);
-      if ((!data.retail_vehicles || data.retail_vehicles.length === 0) &&
-          (!data.auction_vehicles || data.auction_vehicles.length === 0)) {
-        setError("추천 결과가 없습니다. 검색 조건을 확인해주세요.");
-        return;
-      }
-      onSubmit(target, data);
-    } catch (err) {
-      console.error("[CarFarm] 추천 에러:", err);
-      setError(err instanceof Error ? err.message : "추천 요청 실패");
-    } finally {
-      setLoading(false);
-    }
+    onSubmit(target);
   };
 
   const selectClass =
@@ -405,20 +389,9 @@ export default function VehicleForm({ onSubmit }: Props) {
       {/* 제출 버튼 */}
       <button
         onClick={handleSubmit}
-        disabled={loading}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-3 px-4 rounded-lg transition-colors text-sm"
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors text-sm"
       >
-        {loading ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            LLM 추론 중... (20~40초 소요)
-          </span>
-        ) : (
-          "기준차량 추천 받기"
-        )}
+        경매 데이터 검색
       </button>
     </div>
   );

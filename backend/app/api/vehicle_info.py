@@ -73,22 +73,51 @@ async def search_retail(
     fuel: str | None = None,
     trim: str | None = None,
     mileage_max: int | None = None,
-    limit: int = Query(100, ge=1, le=9999),
-    sort_by: str = "가격",
+    limit: int = Query(500, ge=1, le=9999),
+    sort_by: str = "날짜",
 ):
-    """소매가 차량 검색 — 엔카 API 실시간 호출 + Detail API 보강"""
-    # 연식 ±1년 확장
-    adj_year_min = year_min - 1 if year_min else None
-    adj_year_max = year_max + 1 if year_max else None
-
-    results = search_encar_retail(
-        maker=maker, model_keyword=model,
-        year_min=adj_year_min, year_max=adj_year_max,
+    """소매가 차량 검색 — Firestore 엔카(KYMaGfcnzwGsvbDm6Z91) 데이터"""
+    results = search_auction_db(
+        maker=maker, model=model, generation=generation,
+        year_min=year_min, year_max=year_max,
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         limit=limit, sort_by=sort_by,
+        company_id="KYMaGfcnzwGsvbDm6Z91",
     )
-    await enrich_with_details(results)
-    return {"count": len(results), "results": results}
+    # 소매가용 영문키 매핑
+    mapped = []
+    for r in results:
+        mapped.append({
+            "auction_id": r.get("auction_id", ""),
+            "vehicle_name": r.get("차명", ""),
+            "year": r.get("연식"),
+            "mileage": r.get("주행거리"),
+            "retail_price": r.get("낙찰가"),  # 낙찰가를 소매가로 매핑
+            "color": r.get("색상", ""),
+            "options": r.get("옵션", ""),
+            "fuel": r.get("연료", ""),
+            "trim": r.get("trim", ""),
+            "factory_price": r.get("factory_price"),
+            "listing_date": r.get("개최일", ""),
+            "source_url": "",
+            "region": "",
+            "displacement": r.get("배기량"),
+            "has_diagnosis": False,
+            "has_accident_record": False,
+            "seizing_count": 0,
+            "pledge_count": 0,
+            "view_count": 0,
+            "accident_summary": "",
+            "inspection_summary": "",
+            "frame_exchange": r.get("frame_exchange", 0),
+            "frame_bodywork": r.get("frame_bodywork", 0),
+            "frame_corrosion": r.get("frame_corrosion", 0),
+            "exterior_exchange": r.get("exterior_exchange", 0),
+            "exterior_bodywork": r.get("exterior_bodywork", 0),
+            "exterior_corrosion": r.get("exterior_corrosion", 0),
+            "company_id": r.get("company_id", ""),
+        })
+    return {"count": len(mapped), "results": mapped}
 
 
 @router.get("/search-auction")
@@ -102,22 +131,28 @@ async def search_auction_endpoint(
     trim: str | None = None,
     mileage_max: int | None = None,
     usage: str | None = None,
+    company_id: str = "cRFWlHv4PZczXpd8bEw2",
     limit: int = 500,
     sort_by: str = "날짜",
 ):
-    """낙찰가 차량 검색 (영문키 반환)"""
+    """낙찰가 차량 검색 (영문키 반환, company_id로 회사 필터)"""
     results = search_auction_db(
         maker=maker, model=model, generation=generation,
         year_min=year_min, year_max=year_max,
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         usage=usage, limit=limit, sort_by=sort_by,
+        company_id=company_id,
     )
-    # 한글키 → 영문키 변환
+    # 한글키 → 영문키 변환 (차명 + 트림 결합)
     mapped = []
     for r in results:
+        name = r.get("차명", "")
+        trim_val = r.get("trim", "")
+        if trim_val and trim_val not in name:
+            name = f"{name} {trim_val}".strip()
         mapped.append({
             "auction_id": r.get("auction_id", ""),
-            "vehicle_name": r.get("차명", ""),
+            "vehicle_name": name,
             "year": r.get("연식"),
             "mileage": r.get("주행거리"),
             "auction_price": r.get("낙찰가"),

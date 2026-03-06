@@ -1,27 +1,23 @@
 import { useState } from "react";
-import type { TargetVehicle, RecommendResponse } from "./types";
+import type { TargetVehicle } from "./types";
 import StepIndicator from "./components/StepIndicator";
 import VehicleForm from "./components/VehicleForm";
-import RecommendationResult from "./components/RecommendationResult";
+import SearchResult from "./components/SearchResult";
 
-type Step = "input" | "recommend";
+type Step = "input" | "search";
 
 export default function App() {
   const [step, setStep] = useState<Step>("input");
   const [target, setTarget] = useState<TargetVehicle | null>(null);
-  const [recommendData, setRecommendData] =
-    useState<RecommendResponse | null>(null);
 
-  const handleRecommend = (t: TargetVehicle, data: RecommendResponse) => {
+  const handleSearch = (t: TargetVehicle) => {
     setTarget(t);
-    setRecommendData(data);
-    setStep("recommend");
+    setStep("search");
   };
 
   const handleReset = () => {
     setStep("input");
     setTarget(null);
-    setRecommendData(null);
   };
 
   const handleStepClick = (clickedStep: Step) => {
@@ -40,14 +36,10 @@ export default function App() {
 
         <StepIndicator current={step} onStepClick={handleStepClick} />
 
-        {step === "input" && <VehicleForm onSubmit={handleRecommend} />}
+        {step === "input" && <VehicleForm onSubmit={handleSearch} />}
 
-        {step === "recommend" && recommendData && target && (
-          <RecommendationResult
-            target={target}
-            data={recommendData}
-            onBack={handleReset}
-          />
+        {step === "search" && target && (
+          <SearchResult target={target} onBack={handleReset} />
         )}
       </div>
     </div>

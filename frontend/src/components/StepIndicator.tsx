@@ -1,8 +1,8 @@
-type Step = "input" | "recommend";
+type Step = "input" | "search";
 
 const STEPS = [
   { key: "input" as Step, label: "1. 대상차량 입력" },
-  { key: "recommend" as Step, label: "2. 기준차량 추천 & 가격 산출" },
+  { key: "search" as Step, label: "2. 경매 데이터 검색 & 가격 산출" },
 ];
 
 interface Props {
