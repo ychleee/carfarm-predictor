@@ -118,6 +118,62 @@ def _common_trim_prefix(trims: list[str]) -> str:
 
 
 # =========================================================================
+# 모델명 해석 — isaac 앱 입력 → 택소노미 기준 모델명
+# =========================================================================
+
+import re as _re
+
+_GEN_PREFIX_RE = _re.compile(
+    r"^(디\s*올\s*뉴|올\s*뉴|더\s*뉴|뉴)\s+", flags=_re.IGNORECASE
+)
+
+
+@lru_cache(maxsize=256)
+def resolve_base_model(raw_model: str, maker: str | None = None) -> str:
+    """
+    isaac 앱의 차량 모델명을 택소노미 기준 모델명으로 해석.
+
+    예:
+      - "그랜드스타렉스" → "스타렉스"  (포함 매칭)
+      - "카니발 R 리무진" → "카니발"   (포함 매칭)
+      - "더 뉴 아반떼 MD" → "아반떼"   (세대접두사 제거 + 포함 매칭)
+      - "아반떼" → "아반떼"            (정확 매칭)
+    """
+    if not raw_model or not raw_model.strip():
+        return raw_model or ""
+
+    cleaned = _GEN_PREFIX_RE.sub("", raw_model.strip()).strip()
+
+    taxonomy = _load_taxonomy()
+
+    # maker가 있으면 해당 제작사의 모델만, 없으면 전체
+    if maker:
+        maker_data = taxonomy.get(maker, {})
+        model_names = list(maker_data.get("models", {}).keys())
+    else:
+        model_names = []
+        for m_data in taxonomy.values():
+            model_names.extend(m_data.get("models", {}).keys())
+
+    if not model_names:
+        return cleaned
+
+    # 1) 정확 매칭
+    cleaned_lower = cleaned.lower()
+    for name in model_names:
+        if name.lower() == cleaned_lower:
+            return name
+
+    # 2) 포함 매칭 — taxonomy 모델이 cleaned에 포함되는지 (길이 내림차순)
+    sorted_names = sorted(model_names, key=len, reverse=True)
+    for name in sorted_names:
+        if name.lower() in cleaned_lower:
+            return name
+
+    return cleaned
+
+
+# =========================================================================
 # 공개 API 함수
 # =========================================================================
 

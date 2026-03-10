@@ -278,7 +278,7 @@ _TOOL_SEARCH_AUCTION = {
     "description": (
         "낙찰 DB에서 조건에 맞는 차량을 검색합니다. "
         "결과에 낙찰가, 주행거리, 옵션, 사고이력, 색상 등이 포함됩니다. "
-        "maker와 model은 필수입니다."
+        "model은 필수, maker는 선택입니다."
     ),
     "input_schema": {
         "type": "object",
@@ -328,7 +328,7 @@ _TOOL_SEARCH_AUCTION = {
                 "description": "정렬 기준: 날짜 또는 가격"
             }
         },
-        "required": ["maker", "model"]
+        "required": ["model"]
     }
 }
 
@@ -344,7 +344,7 @@ _TOOL_SEARCH_RETAIL = {
     "description": (
         "엔카 소매 매물 DB에서 조건에 맞는 차량을 검색합니다. "
         "결과에 소매가, 주행거리, 옵션, 사고이력 등이 포함됩니다. "
-        "maker와 model은 필수입니다. year를 지정하면 ±1년 엄격, ±3년 완화 자동 검색합니다."
+        "model은 필수, maker는 선택입니다. year를 지정하면 ±1년 엄격, ±3년 완화 자동 검색합니다."
     ),
     "input_schema": {
         "type": "object",
@@ -382,7 +382,7 @@ _TOOL_SEARCH_RETAIL = {
                 "description": "최대 결과 수 (기본 50)"
             }
         },
-        "required": ["maker", "model"]
+        "required": ["model"]
     }
 }
 

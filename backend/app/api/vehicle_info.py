@@ -89,8 +89,8 @@ async def price_stats(
 
 @router.get("/search-retail")
 async def search_retail(
-    maker: str = Query(...),
     model: str = Query(...),
+    maker: str | None = None,
     generation: str | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -102,7 +102,7 @@ async def search_retail(
 ):
     """소매가 차량 검색 — Firestore 엔카(KYMaGfcnzwGsvbDm6Z91) 데이터"""
     results = search_auction_db(
-        maker=maker, model=model, generation=generation,
+        model=model, maker=maker, generation=generation,
         year_min=year_min, year_max=year_max,
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         limit=limit, sort_by=sort_by,
@@ -146,8 +146,8 @@ async def search_retail(
 
 @router.get("/search-auction")
 async def search_auction_endpoint(
-    maker: str = Query(...),
     model: str = Query(...),
+    maker: str | None = None,
     generation: str | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -159,9 +159,9 @@ async def search_auction_endpoint(
     limit: int = 500,
     sort_by: str = "날짜",
 ):
-    """낙찰가 차량 검색 (영문키 반환, company_id로 회사 필터)"""
+    """낙찰가 차량 검색 — vehicleModel로 searchTokens 검색 (영문키 반환)"""
     results = search_auction_db(
-        maker=maker, model=model, generation=generation,
+        model=model, maker=maker, generation=generation,
         year_min=year_min, year_max=year_max,
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         usage=usage, limit=limit, sort_by=sort_by,
@@ -206,8 +206,8 @@ async def search_auction_endpoint(
 
 @router.get("/search")
 async def search_auction(
-    maker: str = Query(...),
     model: str = Query(...),
+    maker: str | None = None,
     generation: str | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -220,7 +220,7 @@ async def search_auction(
 ):
     """낙찰 DB 검색 (LLM 도구로도 사용)"""
     results = search_auction_db(
-        maker=maker, model=model, generation=generation,
+        model=model, maker=maker, generation=generation,
         year_min=year_min, year_max=year_max,
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         usage=usage, limit=limit, sort_by=sort_by,

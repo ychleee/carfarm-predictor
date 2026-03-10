@@ -15,6 +15,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.services.firestore_client import get_firestore_db
 from app.services.rule_engine import normalize_color
+from app.services.taxonomy_search import resolve_base_model
 
 
 # =========================================================================
@@ -40,6 +41,69 @@ _USAGE_MAP = {
     "관용": "commercial",
     "일반": "personal",
 }
+
+# ── 제작사 한글/영어 매핑 (양방향) ──
+
+_MAKER_ALIASES: dict[str, str] = {}
+
+def _build_maker_aliases() -> None:
+    """한글↔영어 제작사명 양방향 매핑 생성 (소문자 키)"""
+    pairs = [
+        ("현대", "hyundai"),
+        ("기아", "kia"),
+        ("제네시스", "genesis"),
+        ("쌍용", "ssangyong"), ("kg모빌리티", "ssangyong"),
+        ("르노코리아", "renault korea"), ("르노삼성", "renault samsung"),
+        ("쉐보레", "chevrolet"),
+        ("벤츠", "mercedes-benz"), ("메르세데스-벤츠", "mercedes-benz"),
+        ("아우디", "audi"),
+        ("폭스바겐", "volkswagen"),
+        ("볼보", "volvo"),
+        ("토요타", "toyota"), ("도요타", "toyota"),
+        ("혼다", "honda"),
+        ("닛산", "nissan"),
+        ("렉서스", "lexus"),
+        ("포르쉐", "porsche"),
+        ("랜드로버", "land rover"),
+        ("재규어", "jaguar"),
+        ("테슬라", "tesla"),
+        ("링컨", "lincoln"),
+        ("캐딜락", "cadillac"),
+        ("지프", "jeep"),
+        ("포드", "ford"),
+        ("미니", "mini"),
+        ("푸조", "peugeot"),
+        ("인피니티", "infiniti"),
+        ("마세라티", "maserati"),
+        ("벤틀리", "bentley"),
+        ("페라리", "ferrari"),
+        ("람보르기니", "lamborghini"),
+    ]
+    for ko, en in pairs:
+        _MAKER_ALIASES[ko] = en
+        _MAKER_ALIASES[en] = ko
+
+_build_maker_aliases()
+
+
+def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
+    """제작사 매칭 — 직접 일치 또는 한글/영어 별칭 매칭"""
+    vm = vehicle_maker.lower().strip()
+    qm = query_maker.lower().strip()
+    if vm == qm:
+        return True
+    # 별칭으로 변환 후 비교
+    alias = _MAKER_ALIASES.get(qm)
+    if alias and (vm == alias or vm == qm):
+        return True
+    # 반대 방향도 확인
+    vm_alias = _MAKER_ALIASES.get(vm)
+    if vm_alias and vm_alias == qm:
+        return True
+    # 부분 포함 매칭 (예: "메르세데스-벤츠" vs "벤츠")
+    if qm in vm or vm in qm:
+        return True
+    return False
 
 # ── 프레임 vs 외부패널 분류 ──
 
@@ -305,8 +369,8 @@ def estimate_option_unit_price(maker: str, model: str) -> float:
 # =========================================================================
 
 def search_retail_db(
-    maker: str,
     model: str,
+    maker: str | None = None,
     generation: str | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -319,14 +383,14 @@ def search_retail_db(
     """
     엔카 소매가 차량 검색.
 
-    searchTokens 필드의 array-contains로 모델명 검색 후,
-    maker를 Python 후처리로 필터링.
+    searchTokens 필드의 array-contains로 vehicleModel 검색.
+    maker 제공 시 Python 후처리로 필터링.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
 
-    model_lower = model.lower().strip() if model else ""
-    maker_lower = maker.lower().strip() if maker else ""
+    resolved = resolve_base_model(model, maker) if model else model
+    model_lower = resolved.lower().strip() if resolved else ""
 
     if model_lower:
         query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
@@ -340,10 +404,10 @@ def search_retail_db(
     for doc in docs:
         data = doc.to_dict()
 
-        # maker 필터 (Python 후처리)
-        if maker_lower:
-            vehicle_maker = (data.get("vehicleMaker") or "").lower()
-            if vehicle_maker != maker_lower:
+        # maker 후필터 (한글/영어 무관 필터링)
+        if maker:
+            vehicle_maker = data.get("vehicleMaker") or ""
+            if not _match_maker(vehicle_maker, maker):
                 continue
 
         # 소매가 필수
@@ -356,10 +420,6 @@ def search_retail_db(
         if year_min and (not year or year < year_min):
             continue
         if year_max and (not year or year > year_max):
-            continue
-
-        # 세대 (부분 매칭)
-        if not _match_contains(data.get("generation"), generation):
             continue
 
         # 연료 (부분 매칭)
@@ -387,8 +447,8 @@ def search_retail_db(
 
 
 def search_auction_db(
-    maker: str,
     model: str,
+    maker: str | None = None,
     generation: str | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -405,15 +465,14 @@ def search_auction_db(
     """
     Firestore vehicles 컬렉션에서 조건 검색.
 
-    searchTokens 필드의 array-contains로 모델명 검색 후,
-    maker를 Python 후처리로 필터링.
+    searchTokens 필드의 array-contains로 vehicleModel 검색.
     company_id 지정 시 해당 회사 데이터만 반환.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
 
-    model_lower = model.lower().strip() if model else ""
-    maker_lower = maker.lower().strip() if maker else ""
+    resolved = resolve_base_model(model, maker) if model else model
+    model_lower = resolved.lower().strip() if resolved else ""
 
     # companyId를 Firestore 쿼리 레벨로 필터 (인덱스 빌드 중이면 Python fallback)
     use_company_filter_in_query = False
@@ -448,10 +507,10 @@ def search_auction_db(
             if (data.get("companyId") or "") != company_id:
                 continue
 
-        # maker 필터 (Python 후처리)
-        if maker_lower:
-            vehicle_maker = (data.get("vehicleMaker") or "").lower()
-            if vehicle_maker != maker_lower:
+        # maker 후필터 (Firestore 쿼리 후 Python에서 한글/영어 무관 필터링)
+        if maker:
+            vehicle_maker = data.get("vehicleMaker") or ""
+            if not _match_maker(vehicle_maker, maker):
                 continue
 
         # 유효 낙찰가 필터
@@ -468,10 +527,6 @@ def search_auction_db(
         if year_min and (not year or year < year_min):
             continue
         if year_max and (not year or year > year_max):
-            continue
-
-        # 세대 (부분 매칭)
-        if not _match_contains(data.get("generation"), generation):
             continue
 
         # 연료 (부분 매칭)
@@ -507,10 +562,11 @@ def search_auction_db(
         results.append(_to_legacy_dict(doc.id, data))
 
     # 옵션 단가 추정값 주입 (같은 차종 출고가-기본가 기반)
-    unit_price = estimate_option_unit_price(maker, model)
-    if unit_price > 0:
-        for r in results:
-            r["option_unit_price"] = unit_price
+    if maker:
+        unit_price = estimate_option_unit_price(maker, model)
+        if unit_price > 0:
+            for r in results:
+                r["option_unit_price"] = unit_price
 
     # 정렬: Firestore에서 saleDate DESC로 가져왔으므로 기본 날짜순 유지
     if sort_by == "가격":

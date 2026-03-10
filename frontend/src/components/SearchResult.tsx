@@ -154,7 +154,6 @@ export default function SearchResult({ target, onBack }: Props) {
         maker: target.vehicleMaker,
         model: target.vehicleModel,
         company_id: tabId,
-        generation: target.generation ?? undefined,
         limit: 500,
       });
 
