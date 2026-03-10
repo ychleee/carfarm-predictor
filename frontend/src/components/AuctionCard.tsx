@@ -38,7 +38,7 @@ export default function AuctionCard({
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
-      {/* 헤더: 번호 + 회사 태그 + 차명 + 삭제 */}
+      {/* 헤더: 번호 + 회사 태그 + 차명 + 엔카진단 + 삭제 */}
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-start gap-2 min-w-0">
           <span className={`${badgeBg} ${badgeText} text-xs font-bold px-2 py-0.5 rounded shrink-0`}>
@@ -53,13 +53,20 @@ export default function AuctionCard({
             {v.vehicle_name ?? `차량 ${v.auction_id}`}
           </h4>
         </div>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="text-gray-300 hover:text-red-500 text-lg leading-none shrink-0 transition-colors"
-          title="삭제"
-        >
-          &times;
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {v.has_encar_diagnosis && (
+            <span className="bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+              엔카진단
+            </span>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="text-gray-300 hover:text-red-500 text-lg leading-none transition-colors"
+            title="삭제"
+          >
+            &times;
+          </button>
+        </div>
       </div>
 
       {/* 스펙 한 줄 */}

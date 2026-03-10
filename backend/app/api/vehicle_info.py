@@ -11,6 +11,30 @@ from app.services.encar_api import search_encar_retail, enrich_with_details
 
 router = APIRouter()
 
+_ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
+
+
+async def _enrich_encar_mapped(mapped: list[dict]) -> None:
+    """엔카 Firestore 결과를 엔카 API로 보강 (옵션·출고가·진단 등)"""
+    # auction_id에서 encar_ 접두사 제거 (엔카 API 호출용)
+    original_ids = {}
+    for r in mapped:
+        aid = r["auction_id"]
+        if aid.startswith("encar_"):
+            stripped = aid[len("encar_"):]
+            original_ids[stripped] = aid
+            r["auction_id"] = stripped
+
+    await enrich_with_details(mapped)
+
+    # 원래 ID 복원 + has_diagnosis → has_encar_diagnosis 매핑
+    for r in mapped:
+        aid = r["auction_id"]
+        if aid in original_ids:
+            r["auction_id"] = original_ids[aid]
+        if r.get("has_diagnosis"):
+            r["has_encar_diagnosis"] = True
+
 
 @router.get("/vehicle-info")
 async def search_vehicle_info(
@@ -170,7 +194,13 @@ async def search_auction_endpoint(
             "exterior_bodywork": r.get("exterior_bodywork", 0),
             "exterior_corrosion": r.get("exterior_corrosion", 0),
             "company_id": r.get("company_id", ""),
+            "has_encar_diagnosis": "엔카진단:Y" in (r.get("description") or ""),
         })
+
+    # 엔카 데이터인 경우 엔카 API로 옵션·출고가·진단 보강
+    if company_id == _ENCAR_COMPANY_ID and mapped:
+        await _enrich_encar_mapped(mapped)
+
     return {"count": len(mapped), "results": mapped}
 
 

@@ -77,10 +77,10 @@ function extractFilterOptions(vehicles: AuctionVehicle[]): FilterOptions {
 function buildSmartDefaults(target: TargetVehicle): AuctionFilters {
   return {
     trim: "",
-    fuel: target.fuel ?? "",
+    fuel: target.fuelType ?? "",
     color: "",
-    yearMin: target.year - 2,
-    yearMax: target.year + 2,
+    yearMin: target.vehicleYear - 2,
+    yearMax: target.vehicleYear + 2,
     mileageMin: null,
     mileageMax: null,
   };
@@ -151,8 +151,8 @@ export default function SearchResult({ target, onBack }: Props) {
 
     try {
       const res = await searchAuction({
-        maker: target.maker,
-        model: target.model,
+        maker: target.vehicleMaker,
+        model: target.vehicleModel,
         company_id: tabId,
         generation: target.generation ?? undefined,
         limit: 500,
@@ -315,14 +315,14 @@ export default function SearchResult({ target, onBack }: Props) {
       <div className="bg-gray-100 rounded-lg px-4 py-2.5 mb-4 text-sm text-gray-700 flex flex-wrap gap-x-4 gap-y-1">
         <span className="font-medium">대상:</span>
         <span>
-          {target.maker} {target.model}
+          {target.vehicleMaker} {target.vehicleModel}
         </span>
         {target.generation && <span>| {target.generation}</span>}
-        {target.trim && <span>| {target.trim}</span>}
-        <span>| {target.year}년</span>
+        {target.vehicleTrim && <span>| {target.vehicleTrim}</span>}
+        <span>| {target.vehicleYear}년</span>
         <span>| {target.mileage.toLocaleString()}km</span>
-        {target.fuel && <span>| {target.fuel}</span>}
-        {target.color && <span>| {target.color}</span>}
+        {target.fuelType && <span>| {target.fuelType}</span>}
+        {target.vehicleColor && <span>| {target.vehicleColor}</span>}
       </div>
 
       {/* 탭 바 */}

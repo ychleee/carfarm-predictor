@@ -24,16 +24,16 @@ class TargetVehicleSchema(BaseModel):
         extra="ignore",         # Firestore 전용 필드 자동 무시
     )
 
-    # --- 핵심 필드 ---
+    # --- 핵심 필드 (Isaac VehicleModel 필드명 통일) ---
     maker: str = Field(alias="vehicleMaker")
     model: str = Field(alias="vehicleModel")
-    year: int = Field(alias="modelYear")
+    year: int = Field(alias="vehicleYear")
     mileage: int = Field(default=0)
     fuel: str | None = Field(default=None, alias="fuelType")
-    displacement: str | None = Field(default=None)
-    drive: str | None = Field(default=None)
-    trim: str | None = Field(default=None, alias="grade")
-    color: str | None = Field(default=None, alias="exteriorColor")
+    displacement: str | None = Field(default=None, alias="engineDisplacement")
+    drive: str | None = Field(default=None, alias="driveType")
+    trim: str | None = Field(default=None, alias="vehicleTrim")
+    color: str | None = Field(default=None, alias="vehicleColor")
     usage: str | None = Field(default=None, alias="vehicleCategory")
     domestic: bool = True
     options: list[str] = Field(default_factory=list, alias="vehicleOptions")

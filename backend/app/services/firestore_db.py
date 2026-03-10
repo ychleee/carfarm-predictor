@@ -205,6 +205,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "base_price": base_price,
         "factory_price": factory_price,
         "company_id": data.get("companyId") or "",
+        "description": data.get("description") or "",
     }
 
 

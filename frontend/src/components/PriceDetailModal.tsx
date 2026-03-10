@@ -70,10 +70,10 @@ export default function PriceDetailModal({
                 대상차량
               </p>
               <p className="text-sm font-medium text-gray-900">
-                {target.maker} {target.model} {target.trim ?? ""}
+                {target.vehicleMaker} {target.vehicleModel} {target.vehicleTrim ?? ""}
               </p>
               <p className="text-xs text-gray-500 mt-0.5">
-                {target.year}년 | {target.mileage.toLocaleString()}km
+                {target.vehicleYear}년 | {target.mileage.toLocaleString()}km
               </p>
             </div>
             <div className="bg-blue-50 rounded-lg p-3">

@@ -136,20 +136,20 @@ export default function VehicleForm({ onSubmit }: Props) {
     }
 
     const target: TargetVehicle = {
-      maker,
-      model,
+      vehicleMaker: maker,
+      vehicleModel: model,
       generation: generation || undefined,
-      year,
+      vehicleYear: year,
       mileage,
-      fuel: fuel || undefined,
-      displacement: displacement || undefined,
-      trim: trim || undefined,
-      color: color || undefined,
-      usage: usage || undefined,
+      fuelType: fuel || undefined,
+      engineDisplacement: displacement || undefined,
+      vehicleTrim: trim || undefined,
+      vehicleColor: color || undefined,
+      vehicleCategory: usage || undefined,
       domestic: true,
-      options,
-      exchange_count: exchangeCount,
-      bodywork_count: bodyworkCount,
+      vehicleOptions: options,
+      exchangeCount,
+      bodyworkCount,
     };
 
     setError(null);

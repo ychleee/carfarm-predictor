@@ -1,22 +1,22 @@
 // === 백엔드 Pydantic 모델 미러 ===
 
-/** 대상차량 (POST /api/recommend 입력) */
+/** 대상차량 (POST /api/recommend 입력) — Isaac VehicleModel 필드명 통일 */
 export interface TargetVehicle {
-  maker: string;
-  model: string;
+  vehicleMaker: string;
+  vehicleModel: string;
   generation?: string | null;
-  year: number;
+  vehicleYear: number;
   mileage: number;
-  fuel?: string | null;
-  displacement?: string | null;
-  drive?: string | null;
-  trim?: string | null;
-  color?: string | null;
-  usage?: string | null;
+  fuelType?: string | null;
+  engineDisplacement?: string | null;
+  driveType?: string | null;
+  vehicleTrim?: string | null;
+  vehicleColor?: string | null;
+  vehicleCategory?: string | null;
   domestic?: boolean;
-  options?: string[];
-  exchange_count?: number;
-  bodywork_count?: number;
+  vehicleOptions?: string[];
+  exchangeCount?: number;
+  bodyworkCount?: number;
 }
 
 /** 낙찰가 차량 */
@@ -45,6 +45,8 @@ export interface AuctionVehicle {
   exterior_corrosion: number;
   // LLM 추천 이유
   reason?: string | null;
+  // 엔카진단 여부
+  has_encar_diagnosis?: boolean;
 }
 
 /** search-auction 응답 */
