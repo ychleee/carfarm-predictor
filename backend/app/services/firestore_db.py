@@ -18,6 +18,23 @@ from app.services.rule_engine import normalize_color
 from app.services.taxonomy_search import resolve_base_model
 
 
+def _search_token_variants(token: str) -> list[str]:
+    """하이픈 포함/미포함 변형 토큰 생성 (중복 제거, 원본 우선)"""
+    if not token:
+        return []
+    variants = [token]
+    if "-" in token:
+        without = token.replace("-", "")
+        if without != token:
+            variants.append(without)
+    else:
+        # 영문+한글 경계에 하이픈 삽입 (e.g. "e클래스" → "e-클래스")
+        with_hyphen = re.sub(r"([a-z])([가-힣])", r"\1-\2", token)
+        if with_hyphen != token:
+            variants.append(with_hyphen)
+    return variants
+
+
 # =========================================================================
 # 내부 헬퍼
 # =========================================================================
@@ -47,13 +64,15 @@ _USAGE_MAP = {
 _MAKER_ALIASES: dict[str, str] = {}
 
 def _build_maker_aliases() -> None:
-    """한글↔영어 제작사명 양방향 매핑 생성 (소문자 키)"""
+    """제작사명 → canonical 매핑 (소문자 키). 같은 canonical이면 동일 제작사."""
+    # 같은 그룹의 이름들은 동일한 canonical 값을 공유
     pairs = [
         ("현대", "hyundai"),
         ("기아", "kia"),
         ("제네시스", "genesis"),
         ("쌍용", "ssangyong"), ("kg모빌리티", "ssangyong"),
-        ("르노코리아", "renault korea"), ("르노삼성", "renault samsung"),
+        ("르노코리아", "renault"), ("르노삼성", "renault"),
+        ("르노코리아(삼성)", "renault"), ("르노(삼성)", "renault"),
         ("쉐보레", "chevrolet"),
         ("벤츠", "mercedes-benz"), ("메르세데스-벤츠", "mercedes-benz"),
         ("아우디", "audi"),
@@ -79,26 +98,28 @@ def _build_maker_aliases() -> None:
         ("페라리", "ferrari"),
         ("람보르기니", "lamborghini"),
     ]
-    for ko, en in pairs:
-        _MAKER_ALIASES[ko] = en
-        _MAKER_ALIASES[en] = ko
+    for name, canonical in pairs:
+        _MAKER_ALIASES[name] = canonical
+        _MAKER_ALIASES[canonical] = canonical  # canonical도 자기 자신으로 매핑
 
 _build_maker_aliases()
 
 
 def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
-    """제작사 매칭 — 직접 일치 또는 한글/영어 별칭 매칭"""
+    """제작사 매칭 — 직접 일치, canonical 비교, 부분 포함"""
     vm = vehicle_maker.lower().strip()
     qm = query_maker.lower().strip()
     if vm == qm:
         return True
-    # 별칭으로 변환 후 비교
-    alias = _MAKER_ALIASES.get(qm)
-    if alias and (vm == alias or vm == qm):
+    # canonical 비교: 둘 다 같은 canonical이면 매칭
+    vm_canonical = _MAKER_ALIASES.get(vm)
+    qm_canonical = _MAKER_ALIASES.get(qm)
+    if vm_canonical and qm_canonical and vm_canonical == qm_canonical:
         return True
-    # 반대 방향도 확인
-    vm_alias = _MAKER_ALIASES.get(vm)
-    if vm_alias and vm_alias == qm:
+    # 단방향 별칭 비교
+    if vm_canonical and vm_canonical == qm:
+        return True
+    if qm_canonical and qm_canonical == vm:
         return True
     # 부분 포함 매칭 (예: "메르세데스-벤츠" vs "벤츠")
     if qm in vm or vm in qm:
@@ -392,13 +413,19 @@ def search_retail_db(
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
 
-    if model_lower:
-        query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
-    else:
-        query = col
-
     fetch_limit = min(limit * 10, 5000)
-    docs = query.limit(fetch_limit).get()
+    # 하이픈 변형 토큰으로 모두 검색하여 합침
+    seen_ids: set[str] = set()
+    docs = []
+    for token in _search_token_variants(model_lower) if model_lower else [""]:
+        if token:
+            query = col.where(filter=FieldFilter("searchTokens", "array_contains", token))
+        else:
+            query = col
+        for doc in query.limit(fetch_limit).get():
+            if doc.id not in seen_ids:
+                seen_ids.add(doc.id)
+                docs.append(doc)
 
     results = []
     for doc in docs:
@@ -474,28 +501,35 @@ def search_auction_db(
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
 
-    # companyId를 Firestore 쿼리 레벨로 필터 (인덱스 빌드 중이면 Python fallback)
+    # 하이픈 변형 토큰으로 모두 검색하여 합침
     use_company_filter_in_query = False
-    try:
-        if company_id:
-            query = col.where(filter=FieldFilter("companyId", "==", company_id))
-        else:
-            query = col
-
-        if model_lower:
-            query = query.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
-
-        query = query.order_by("saleDate", direction="DESCENDING")
-        docs = list(query.get())
-        use_company_filter_in_query = True
-    except Exception:
-        # 인덱스 빌드 중 등 오류 시 기존 방식으로 fallback
-        if model_lower:
-            query = col.where(filter=FieldFilter("searchTokens", "array_contains", model_lower))
-        else:
-            query = col
-        query = query.order_by("saleDate", direction="DESCENDING")
-        docs = list(query.get())
+    seen_ids: set[str] = set()
+    docs: list = []
+    tokens = _search_token_variants(model_lower) if model_lower else [""]
+    for token in tokens:
+        try:
+            if company_id:
+                q = col.where(filter=FieldFilter("companyId", "==", company_id))
+            else:
+                q = col
+            if token:
+                q = q.where(filter=FieldFilter("searchTokens", "array_contains", token))
+            q = q.order_by("saleDate", direction="DESCENDING")
+            for doc in q.get():
+                if doc.id not in seen_ids:
+                    seen_ids.add(doc.id)
+                    docs.append(doc)
+            use_company_filter_in_query = True
+        except Exception:
+            if token:
+                q = col.where(filter=FieldFilter("searchTokens", "array_contains", token))
+            else:
+                q = col
+            q = q.order_by("saleDate", direction="DESCENDING")
+            for doc in q.get():
+                if doc.id not in seen_ids:
+                    seen_ids.add(doc.id)
+                    docs.append(doc)
 
     # 2차: Python 후처리 필터
     results = []
@@ -708,6 +742,9 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
     if retail_price > 100000:
         retail_price = round(retail_price / 10000, 0)
 
+    raw_base = _safe_number(data.get("vehicleBasePrice"))
+    base_price = round(raw_base / 10000, 1) if raw_base > 10000 else raw_base
+
     raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
     factory_price = round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory
 
@@ -749,6 +786,7 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "색상": data.get("vehicleColor") or "",
         "trim": data.get("vehicleTrim") or "",
         "source_url": data.get("sourceUrl") or "",
+        "base_price": base_price,
         "factory_price": factory_price,
         "옵션": options_str,
         "연료": data.get("fuelType") or "",

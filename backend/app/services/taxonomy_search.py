@@ -124,8 +124,21 @@ def _common_trim_prefix(trims: list[str]) -> str:
 import re as _re
 
 _GEN_PREFIX_RE = _re.compile(
-    r"^(디\s*올\s*뉴|올\s*뉴|더\s*뉴|뉴)\s+", flags=_re.IGNORECASE
+    r"^(디\s*올\s*뉴|올\s*뉴|더\s*뉴|뉴)\s*", flags=_re.IGNORECASE
 )
+
+# 흔한 오타 보정 (정규화 시 적용)
+_TYPO_MAP = {
+    "클레스": "클래스",
+}
+
+
+def _normalize_for_match(s: str) -> str:
+    """매칭용 정규화: 소문자 + 하이픈/공백 제거 + 오타 보정"""
+    result = s.lower().replace("-", "").replace(" ", "")
+    for typo, correct in _TYPO_MAP.items():
+        result = result.replace(typo, correct)
+    return result
 
 
 @lru_cache(maxsize=256)
@@ -137,7 +150,7 @@ def resolve_base_model(raw_model: str, maker: str | None = None) -> str:
       - "그랜드스타렉스" → "스타렉스"  (포함 매칭)
       - "카니발 R 리무진" → "카니발"   (포함 매칭)
       - "더 뉴 아반떼 MD" → "아반떼"   (세대접두사 제거 + 포함 매칭)
-      - "아반떼" → "아반떼"            (정확 매칭)
+      - "E클래스" / "E클레스" → "E-클래스" (하이픈·오타 정규화)
     """
     if not raw_model or not raw_model.strip():
         return raw_model or ""
@@ -158,16 +171,17 @@ def resolve_base_model(raw_model: str, maker: str | None = None) -> str:
     if not model_names:
         return cleaned
 
-    # 1) 정확 매칭
-    cleaned_lower = cleaned.lower()
+    cleaned_norm = _normalize_for_match(cleaned)
+
+    # 1) 정확 매칭 (정규화 후 비교)
     for name in model_names:
-        if name.lower() == cleaned_lower:
+        if _normalize_for_match(name) == cleaned_norm:
             return name
 
-    # 2) 포함 매칭 — taxonomy 모델이 cleaned에 포함되는지 (길이 내림차순)
+    # 2) 포함 매칭 — taxonomy 모델이 cleaned에 포함되는지 (정규화 후, 길이 내림차순)
     sorted_names = sorted(model_names, key=len, reverse=True)
     for name in sorted_names:
-        if name.lower() in cleaned_lower:
+        if _normalize_for_match(name) in cleaned_norm:
             return name
 
     return cleaned

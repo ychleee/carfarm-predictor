@@ -278,7 +278,7 @@ async def _enrich_single(
     r["color"] = spec.get("colorName") or ""
     origin_price = category.get("originPrice")
     if origin_price is not None:
-        r["factory_price"] = int(origin_price)
+        r["base_price"] = int(origin_price)
     displacement = spec.get("displacement")
     if displacement:
         r["displacement"] = int(displacement)
