@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import recommend, calculate, feedback, vehicle_info
+from app.api import recommend, calculate, feedback, vehicle_info, predict
 
 app = FastAPI(
     title="CarFarm v2 API",
@@ -37,6 +37,7 @@ app.include_router(recommend.router, prefix="/api", tags=["추천"])
 app.include_router(calculate.router, prefix="/api", tags=["가격산출"])
 app.include_router(feedback.router, prefix="/api", tags=["피드백"])
 app.include_router(vehicle_info.router, prefix="/api", tags=["차량정보"])
+app.include_router(predict.router, prefix="/api", tags=["가격예측"])
 
 
 @app.get("/")

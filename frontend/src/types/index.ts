@@ -156,6 +156,35 @@ export interface FeedbackRequest {
   comment: string | null;
 }
 
+// === AI 가격 예측 ===
+
+export interface PriceFactor {
+  factor: string;
+  impact: number;
+  description: string;
+}
+
+export interface PriceStats {
+  count: number;
+  mean: number;
+  median: number;
+  min: number;
+  max: number;
+}
+
+export interface PricePredictionResponse {
+  estimated_auction: number;
+  estimated_retail: number;
+  confidence: string;
+  reasoning: string;
+  factors: PriceFactor[];
+  comparable_summary: string;
+  key_comparables: string[];
+  vehicles_analyzed: number;
+  auction_stats: PriceStats;
+  retail_stats: PriceStats;
+}
+
 // === Taxonomy 타입 ===
 
 export interface ModelInfo {

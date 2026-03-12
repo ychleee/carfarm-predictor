@@ -4,14 +4,15 @@ import type {
   AuctionVehicle,
   AuctionFilters,
   FilterOptions,
-  CompanyTab,
   CalculateResponse,
+  PricePredictionResponse,
 } from "../types";
 import { COMPANY_TABS } from "../types";
-import { searchAuction, calculatePrice, submitFeedback } from "../api/client";
+import { searchAuction, calculatePrice, predictPrice, submitFeedback } from "../api/client";
 import AuctionCard from "./AuctionCard";
 import type { CalcState } from "./AuctionCard";
 import PriceDetailModal from "./PriceDetailModal";
+import PricePredictionModal from "./PricePredictionModal";
 import DeleteModal from "./DeleteModal";
 
 // === TabData ===
@@ -137,6 +138,28 @@ export default function SearchResult({ target, onBack }: Props) {
     ref: AuctionVehicle;
     calc: CalculateResponse;
   } | null>(null);
+
+  // AI 가격 예측
+  const [predictionState, setPredictionState] = useState<{
+    status: "idle" | "loading" | "done" | "error";
+    data?: PricePredictionResponse;
+    error?: string;
+  }>({ status: "idle" });
+  const [showPredictionModal, setShowPredictionModal] = useState(false);
+
+  const handlePredictPrice = async () => {
+    setPredictionState({ status: "loading" });
+    try {
+      const result = await predictPrice(target);
+      setPredictionState({ status: "done", data: result });
+      setShowPredictionModal(true);
+    } catch (err) {
+      setPredictionState({
+        status: "error",
+        error: err instanceof Error ? err.message : "예측 실패",
+      });
+    }
+  };
 
   // 범위 필터 팝오버
   const [openPopover, setOpenPopover] = useState<string | null>(null);
@@ -310,18 +333,61 @@ export default function SearchResult({ target, onBack }: Props) {
 
   return (
     <div>
-      {/* 대상차량 요약 */}
-      <div className="bg-gray-100 rounded-lg px-4 py-2.5 mb-4 text-sm text-gray-700 flex flex-wrap gap-x-4 gap-y-1">
-        <span className="font-medium">대상:</span>
-        <span>
-          {target.vehicleMaker} {target.vehicleModel}
-        </span>
-        {target.generation && <span>| {target.generation}</span>}
-        {target.vehicleTrim && <span>| {target.vehicleTrim}</span>}
-        <span>| {target.vehicleYear}년</span>
-        <span>| {target.mileage.toLocaleString()}km</span>
-        {target.fuelType && <span>| {target.fuelType}</span>}
-        {target.vehicleColor && <span>| {target.vehicleColor}</span>}
+      {/* 대상차량 요약 + AI 예측 버튼 */}
+      <div className="bg-gray-100 rounded-lg px-4 py-2.5 mb-4 text-sm text-gray-700 flex items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <span className="font-medium">대상:</span>
+          <span>
+            {target.vehicleMaker} {target.vehicleModel}
+          </span>
+          {target.generation && <span>| {target.generation}</span>}
+          {target.vehicleTrim && <span>| {target.vehicleTrim}</span>}
+          <span>| {target.vehicleYear}년</span>
+          <span>| {target.mileage.toLocaleString()}km</span>
+          {target.fuelType && <span>| {target.fuelType}</span>}
+          {target.vehicleColor && <span>| {target.vehicleColor}</span>}
+        </div>
+
+        <div className="shrink-0">
+          {predictionState.status === "idle" && (
+            <button
+              onClick={handlePredictPrice}
+              className="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-sm"
+            >
+              AI 가격 예측
+            </button>
+          )}
+          {predictionState.status === "loading" && (
+            <span className="flex items-center gap-2 text-xs text-purple-600 font-medium">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              AI 분석 중...
+            </span>
+          )}
+          {predictionState.status === "done" && predictionState.data && (
+            <button
+              onClick={() => setShowPredictionModal(true)}
+              className="bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm flex items-center gap-2"
+            >
+              <span>소매 {predictionState.data.estimated_retail.toLocaleString()}만</span>
+              <span className="opacity-75">|</span>
+              <span>낙찰 {predictionState.data.estimated_auction.toLocaleString()}만</span>
+            </button>
+          )}
+          {predictionState.status === "error" && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-red-500">{predictionState.error}</span>
+              <button
+                onClick={handlePredictPrice}
+                className="text-xs text-purple-600 hover:underline"
+              >
+                재시도
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 탭 바 */}
@@ -583,6 +649,15 @@ export default function SearchResult({ target, onBack }: Props) {
           vehicle={deleteTarget}
           onConfirm={handleDeleteConfirm}
           onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {/* AI 가격 예측 모달 */}
+      {showPredictionModal && predictionState.data && (
+        <PricePredictionModal
+          target={target}
+          data={predictionState.data}
+          onClose={() => setShowPredictionModal(false)}
         />
       )}
 

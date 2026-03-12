@@ -3,9 +3,11 @@ import type {
   CalculateResponse,
   FeedbackRequest,
   SearchAuctionResponse,
+  PricePredictionResponse,
   ModelInfo,
   GenerationInfo,
   VariantInfo,
+  TargetVehicle,
 } from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
@@ -53,6 +55,17 @@ export async function calculatePrice(
   return request<CalculateResponse>("/calculate", {
     method: "POST",
     body: JSON.stringify(req),
+  });
+}
+
+// === AI 가격 예측 ===
+
+export async function predictPrice(
+  target: TargetVehicle
+): Promise<PricePredictionResponse> {
+  return request<PricePredictionResponse>("/predict-price", {
+    method: "POST",
+    body: JSON.stringify(target),
   });
 }
 
