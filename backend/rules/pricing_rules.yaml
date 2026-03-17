@@ -15,17 +15,17 @@ rule_basis: "프라이싱 매니저 제공 업계 룰"
 mileage_depreciation:
   description: "주행거리 1만km당 감가율 (%)"
 
-  # 연식별 기본값 (업계 룰)
+  # 연식별 기본값 (업계 룰 대비 ~30% 축소 — 실측 데이터 반영)
   default:
     age_2_3:     # 2~3년
-      rate_per_10k: 2.0   # 소매가의 2%/만km
+      rate_per_10k: 1.4   # 소매가의 1.4%/만km
     age_4_6:     # 4~6년
-      rate_per_10k: 1.5   # 소매가의 1.5%/만km
+      rate_per_10k: 1.0   # 소매가의 1.0%/만km
     age_7_9:     # 7~9년
-      rate_per_10k: 1.0   # 소매가의 1%/만km
+      rate_per_10k: 0.7   # 소매가의 0.7%/만km
     age_10_plus: # 10년+
-      rate_per_10k: 1.0   # 2000만원 이상: 1%/만km
-      flat_per_10k: 10    # 2000만원 미만: 10만원/만km
+      rate_per_10k: 0.7   # 2000만원 이상: 0.7%/만km
+      flat_per_10k: 7     # 2000만원 미만: 7만원/만km
       price_threshold: 2000  # 만원 미만이면 flat 방식 적용
 
   # 20만km 천장 효과 — 업계 룰: 증감 미적용
@@ -44,22 +44,22 @@ accident_adjustment:
   description: "교환/판금 1회당 신차대비율 보정"
 
   exchange:  # X 교환
-    rate_per_count: 0.03   # 1회당 3%
+    rate_per_count: 0.02   # 1회당 2% (업계 3% → 실측 1.7% 반영)
 
   bodywork:  # W 판금·도색
-    # 연식/가격대별 차등
+    # 연식/가격대별 차등 (업계 룰 대비 ~30% 축소)
     tiers:
       - condition: "age < 3 or price >= 2500"
-        rate_per_count: 0.02    # 1회당 2%
+        rate_per_count: 0.014   # 1회당 1.4%
         label: "3년 미만 또는 2500만원 이상"
       - condition: "3 <= age < 7 or 1500 <= price < 2500"
-        rate_per_count: 0.015   # 1회당 1.5%
+        rate_per_count: 0.01    # 1회당 1.0%
         label: "3~7년 또는 1500~2500만원"
       - condition: "price < 500"
         rate_per_count: 0.0     # 미적용
         label: "500만원 미만: 미적용"
       - condition: "default"
-        rate_per_count: 0.01    # 1회당 1%
+        rate_per_count: 0.007   # 1회당 0.7%
         label: "기타"
 
   scratch:  # A 긁힘
@@ -246,10 +246,6 @@ preferred_options:
     default: 50
     note: "선루프: 50만원 (업계 합의)"
 
-  # 나머지 추가옵션 단가
-  general_option_default: 20
-  note: "기본옵션 제외 후, 추가옵션만 비교. 선루프 50만원, 일반 추가옵션 20만원"
-
   # ── 기본옵션 무시 키워드 ──
   # 아래 키워드가 포함된 옵션은 가격 비교에서 제외 (부분 매칭)
   # 대부분의 차량에 기본 장착되어 가치 차이가 없는 항목들
@@ -277,7 +273,6 @@ preferred_options:
     - "도어잠금"
     - "리모컨"
     - "키리스"
-    - "스마트키"
     - "이모빌"
     - "트립컴퓨터"
     # 기본 외장
@@ -311,8 +306,8 @@ preferred_options:
 # =================================================================
 # 업계 룰: 연당 2% (낙찰가 기준)
 year_adjustment:
-  description: "연식 차이 보정: 연당 2%"
-  rate_per_year: 0.02  # 연당 2%
+  description: "연식 차이 보정: 연당 1.4%"
+  rate_per_year: 0.014  # 연당 1.4% (업계 2% → 실측 반영 30% 축소)
   note: "대상이 기준보다 오래되면 감가, 새로우면 가산"
 
 

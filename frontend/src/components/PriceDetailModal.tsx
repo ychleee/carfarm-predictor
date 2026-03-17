@@ -63,36 +63,97 @@ export default function PriceDetailModal({
             </button>
           </div>
 
-          {/* 대상차량 & 기준차량 요약 */}
-          <div className="grid grid-cols-2 gap-3 mb-5">
-            <div className="bg-gray-50 rounded-lg p-3">
-              <p className="text-xs font-semibold text-gray-400 uppercase mb-1">
-                대상차량
-              </p>
-              <p className="text-sm font-medium text-gray-900">
-                {target.vehicleMaker} {target.vehicleModel} {target.vehicleTrim ?? ""}
-              </p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                {target.vehicleYear}년 | {target.mileage.toLocaleString()}km
-              </p>
-            </div>
-            <div className="bg-blue-50 rounded-lg p-3">
-              <p className="text-xs font-semibold text-blue-400 uppercase mb-1">
-                기준차량
-              </p>
-              <p className="text-sm font-medium text-blue-900">
-                {reference.vehicle_name ?? `ID: ${reference.auction_id}`}
-              </p>
-              <p className="text-xs text-blue-600 mt-0.5">
-                {reference.year}년 | {reference.mileage?.toLocaleString()}km |
-                낙찰 {reference.auction_price?.toLocaleString()}만원
-              </p>
+          {/* 차량 비교 테이블 */}
+          <div className="mb-5">
+            <h4 className="text-sm font-semibold text-gray-900 mb-2">차량 비교</h4>
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="text-left px-3 py-2 text-gray-500 font-medium w-[70px]"></th>
+                    <th className="text-left px-3 py-2 text-gray-700 font-semibold">대상차량</th>
+                    <th className="text-left px-3 py-2 text-blue-700 font-semibold">기준차량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const targetName = `${target.vehicleMaker} ${target.vehicleModel}`;
+                    const refName = reference.vehicle_name ?? `ID: ${reference.auction_id}`;
+                    const targetOptions = target.vehicleOptions ?? [];
+                    const refOptions = reference.options?.split(",").map(o => o.trim()).filter(Boolean) ?? [];
+                    const commonOptions = targetOptions.filter(o => refOptions.includes(o));
+                    const targetOnly = targetOptions.filter(o => !refOptions.includes(o));
+                    const refOnly = refOptions.filter(o => !targetOptions.includes(o));
+
+                    // 만원 변환 헬퍼 (100000 초과면 원 단위 → 만원)
+                    const toManWon = (v: number) => v > 100000 ? Math.round(v / 10000) : v;
+
+                    const rows: { label: string; targetVal: string; refVal: string }[] = [
+                      { label: "차명", targetVal: targetName, refVal: refName },
+                      { label: "트림", targetVal: target.vehicleTrim ?? "-", refVal: reference.trim ?? "-" },
+                      { label: "연식", targetVal: `${target.vehicleYear}년`, refVal: reference.year != null ? `${reference.year}년` : "-" },
+                      { label: "주행", targetVal: `${target.mileage.toLocaleString()}km`, refVal: reference.mileage != null ? `${reference.mileage.toLocaleString()}km` : "-" },
+                      { label: "연료", targetVal: target.fuelType ?? "-", refVal: reference.fuel ?? "-" },
+                      { label: "색상", targetVal: target.vehicleColor ?? "-", refVal: reference.color ?? "-" },
+                      { label: "출고가", targetVal: target.vehicleFactoryPrice ? `${toManWon(Number(target.vehicleFactoryPrice)).toLocaleString()}만원` : "-", refVal: (() => { const p = (reference.factory_price != null && reference.factory_price > 0) ? reference.factory_price : reference.base_price; return p != null && p > 0 ? `${toManWon(p).toLocaleString()}만원` : "-"; })() },
+                      {
+                        label: "검차",
+                        targetVal: "AA (무사고)",
+                        refVal: (() => {
+                          const parts: string[] = [];
+                          if (reference.inspection_grade) parts.push(reference.inspection_grade);
+                          const dmg: string[] = [];
+                          if (reference.frame_exchange > 0) dmg.push(`프레임교환${reference.frame_exchange}`);
+                          if (reference.frame_bodywork > 0) dmg.push(`프레임판금${reference.frame_bodywork}`);
+                          if (reference.exterior_exchange > 0) dmg.push(`외판교환${reference.exterior_exchange}`);
+                          if (reference.exterior_bodywork > 0) dmg.push(`외판판금${reference.exterior_bodywork}`);
+                          if (dmg.length > 0) parts.push(dmg.join(" "));
+                          return parts.length > 0 ? parts.join(" ") : "-";
+                        })(),
+                      },
+                    ];
+
+                    return (
+                      <>
+                        {rows.map((row, i) => {
+                          const isDiff = row.targetVal !== row.refVal;
+                          return (
+                            <tr key={row.label} className={`${i % 2 === 0 ? "bg-white" : "bg-gray-50/50"} ${isDiff ? "bg-amber-50/60" : ""}`}>
+                              <td className="px-3 py-1.5 text-gray-400 font-medium">{row.label}</td>
+                              <td className="px-3 py-1.5 text-gray-800">{row.targetVal}</td>
+                              <td className="px-3 py-1.5 text-blue-800">{row.refVal}</td>
+                            </tr>
+                          );
+                        })}
+                        {(targetOptions.length > 0 || refOptions.length > 0) && (
+                          <tr className="border-t border-gray-200">
+                            <td colSpan={3} className="px-3 py-2">
+                              <p className="text-gray-500 font-medium mb-1">옵션 비교</p>
+                              <div className="flex flex-wrap gap-1">
+                                {commonOptions.map(o => (
+                                  <span key={`c-${o}`} className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px]">{o}</span>
+                                ))}
+                                {targetOnly.map(o => (
+                                  <span key={`t-${o}`} className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[10px]">[대상] {o}</span>
+                                ))}
+                                {refOnly.map(o => (
+                                  <span key={`r-${o}`} className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">[기준] {o}</span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    );
+                  })()}
+                </tbody>
+              </table>
             </div>
           </div>
 
           {/* 보정 내역 */}
           <h4 className="text-sm font-semibold text-gray-900 mb-2">
-            보정 내역 (룰 엔진)
+            보정 내역 (LLM 분석)
           </h4>
           <div className="mb-5">
             <AdjustmentTable
@@ -113,25 +174,14 @@ export default function PriceDetailModal({
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-gray-400 mb-1">추정 소매가</p>
-                <p className="text-xl font-bold text-gray-800">
-                  {data.estimated_retail.toLocaleString()}
-                  <span className="text-sm font-normal text-gray-500">
-                    만원
-                  </span>
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-400 mb-1">예상 낙찰가</p>
-                <p className="text-xl font-bold text-blue-700">
-                  {data.estimated_auction.toLocaleString()}
-                  <span className="text-sm font-normal text-blue-400">
-                    만원
-                  </span>
-                </p>
-              </div>
+            <div>
+              <p className="text-xs text-gray-400 mb-1">예상 낙찰가</p>
+              <p className="text-2xl font-bold text-blue-700">
+                {data.estimated_auction.toLocaleString()}
+                <span className="text-sm font-normal text-blue-400">
+                  만원
+                </span>
+              </p>
             </div>
 
             <p className="mt-3 text-sm text-gray-600 bg-gray-50 rounded-lg p-3">

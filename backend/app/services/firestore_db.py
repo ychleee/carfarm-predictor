@@ -291,6 +291,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "factory_price": factory_price,
         "company_id": data.get("companyId") or "",
         "description": data.get("description") or "",
+        "status": data.get("status") or "",
     }
 
 
@@ -626,7 +627,40 @@ def get_vehicle_detail(auction_id: str) -> dict | None:
         unit_price = estimate_option_unit_price(maker, model)
         if unit_price > 0:
             result["option_unit_price"] = unit_price
+
+    # 출고가/기본가 없으면 같은 모델에서 조회
+    if not result.get("factory_price") and not result.get("base_price"):
+        if maker and model:
+            fallback = _lookup_factory_price(db, maker, model)
+            if fallback:
+                result["factory_price"] = fallback.get("factory_price", 0)
+                result["base_price"] = fallback.get("base_price", 0)
+
     return result
+
+
+def _lookup_factory_price(db, maker: str, model: str) -> dict | None:
+    """같은 모델 차량 중 출고가가 있는 문서에서 출고가/기본가 가져오기"""
+    col = db.collection("vehicles")
+    model_lower = model.lower().strip()
+    try:
+        q = col.where(
+            filter=FieldFilter("searchTokens", "array_contains", model_lower)
+        ).limit(50)
+        for doc in q.stream():
+            data = doc.to_dict()
+            if (data.get("vehicleMaker") or "") != maker:
+                continue
+            raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+            if raw_factory > 0:
+                raw_base = _safe_number(data.get("vehicleBasePrice"))
+                return {
+                    "factory_price": round(raw_factory / 10000, 1) if raw_factory > 10000 else raw_factory,
+                    "base_price": round(raw_base / 10000, 1) if raw_base > 10000 else raw_base,
+                }
+    except Exception as e:
+        logger.warning("출고가 조회 실패: %s", e)
+    return None
 
 
 def get_retail_detail(doc_id: str) -> dict | None:
@@ -978,6 +1012,24 @@ def search_retail_vehicles(
         r.pop("_score", None)
 
     return results[:limit]
+
+
+def fetch_comparable_vehicles(
+    maker: str,
+    model: str,
+    year: int,
+    fuel: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """유사차량 검색 (LLM 분석용) — 출고가 있는 차량 우선"""
+    vehicles = search_auction_db(
+        model=model, maker=maker, fuel=fuel,
+        year_min=year - 3, year_max=year + 3,
+        limit=limit, sort_by="날짜",
+    )
+    # 출고가(factory_price)가 있는 차량을 우선 정렬
+    vehicles.sort(key=lambda v: (0 if v.get("factory_price", 0) > 0 else 1))
+    return vehicles
 
 
 def search_auction_by_tokens(

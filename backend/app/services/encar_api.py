@@ -291,6 +291,9 @@ async def _enrich_single(
     r["has_diagnosis"] = bool(adv.get("diagnosisCar"))
     r["has_inspection"] = bool(inspection_cond.get("formats"))
     r["view_count"] = int(manage.get("viewCount") or 0)
+    encar_status = manage.get("status") or manage.get("salesStatus") or ""
+    if encar_status:
+        r["status"] = encar_status
 
     # 옵션 디코딩
     opt_data = detail.get("options") or {}

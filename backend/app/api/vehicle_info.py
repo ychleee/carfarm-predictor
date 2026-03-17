@@ -196,6 +196,7 @@ async def search_auction_endpoint(
             "exterior_corrosion": r.get("exterior_corrosion", 0),
             "company_id": r.get("company_id", ""),
             "has_encar_diagnosis": False,
+            "status": r.get("status", ""),
         })
 
     # 엔카 데이터: 기본가·옵션·엔카진단 보강

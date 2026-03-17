@@ -54,6 +54,11 @@ export default function AuctionCard({
           </h4>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {v.status === "완료" && (
+            <span className="bg-gray-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+              판매완료
+            </span>
+          )}
           {v.has_encar_diagnosis && (
             <span className="bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
               엔카진단
@@ -92,17 +97,25 @@ export default function AuctionCard({
 
       {/* 출고가 · 판매일 */}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-400 mb-2">
-        {v.factory_price != null && v.factory_price > 0 && (
-          <span>출고가 {v.factory_price.toLocaleString()}만원</span>
-        )}
+        {(() => {
+          const p = (v.factory_price != null && v.factory_price > 0) ? v.factory_price : v.base_price;
+          return p != null && p > 0 ? <span>출고가 {p.toLocaleString()}만원</span> : null;
+        })()}
         {v.auction_date && <span>판매일 {v.auction_date}</span>}
       </div>
 
-      {/* 낙찰가 */}
+      {/* 낙찰가 + 신차대비 */}
       <div className="flex items-center gap-3 mb-2">
         <span className="font-medium text-red-600 text-sm">
           낙찰가 {v.auction_price?.toLocaleString()}만원
         </span>
+        {(() => {
+          const fp = (v.factory_price != null && v.factory_price > 0) ? v.factory_price : v.base_price;
+          if (fp && fp > 0 && v.auction_price && v.auction_price > 0) {
+            return <span className="text-xs text-gray-400">신차대비 {Math.round(v.auction_price / fp * 100)}%</span>;
+          }
+          return null;
+        })()}
       </div>
 
       {/* 옵션 태그 */}
@@ -160,24 +173,26 @@ export default function AuctionCard({
         )}
 
         {hasPriceResult && (
-          <button
-            onClick={onClick}
-            className="flex items-center gap-3 bg-green-50 border border-green-200 hover:bg-green-100 rounded-lg px-4 py-2 transition-colors"
-          >
-            <div className="text-left">
-              <span className="text-xs text-gray-500">추정 소매가</span>
-              <p className="text-sm font-bold text-gray-800">
-                {calcState.data!.estimated_retail.toLocaleString()}만원
-              </p>
-            </div>
-            <div className="text-left">
-              <span className="text-xs text-gray-500">예상 낙찰가</span>
-              <p className="text-sm font-bold text-blue-700">
-                {calcState.data!.estimated_auction.toLocaleString()}만원
-              </p>
-            </div>
-            <span className="text-xs text-gray-400 ml-1">상세 &rsaquo;</span>
-          </button>
+          <>
+            <button
+              onClick={onClick}
+              className="flex items-center gap-3 bg-green-50 border border-green-200 hover:bg-green-100 rounded-lg px-4 py-2 transition-colors"
+            >
+              <div className="text-left">
+                <span className="text-xs text-gray-500">예상 낙찰가</span>
+                <p className="text-sm font-bold text-blue-700">
+                  {calcState.data!.estimated_auction.toLocaleString()}만원
+                </p>
+              </div>
+              <span className="text-xs text-gray-400 ml-1">상세 &rsaquo;</span>
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onCalc(); }}
+              className="text-xs text-gray-400 hover:text-blue-600 hover:underline transition-colors"
+            >
+              재산출
+            </button>
+          </>
         )}
       </div>
     </div>

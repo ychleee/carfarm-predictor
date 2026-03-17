@@ -15,6 +15,7 @@ export interface TargetVehicle {
   vehicleCategory?: string | null;
   domestic?: boolean;
   vehicleOptions?: string[];
+  vehicleFactoryPrice?: string | null;
   exchangeCount?: number;
   bodyworkCount?: number;
 }
@@ -32,6 +33,7 @@ export interface AuctionVehicle {
   trim: string | null;
   options: string | null;
   factory_price: number | null;   // 출고가 (만원)
+  base_price: number | null;      // 기본가 (만원)
   inspection_grade: string | null; // 검차등급
   is_export?: boolean;             // 수출여부
   fuel: string | null;             // 연료
@@ -47,6 +49,8 @@ export interface AuctionVehicle {
   reason?: string | null;
   // 엔카진단 여부
   has_encar_diagnosis?: boolean;
+  // 차량 상태 (엔카: "완료"=판매완료)
+  status?: string | null;
 }
 
 /** search-auction 응답 */
@@ -97,6 +101,7 @@ export interface AuctionFilters {
   yearMax: number | null;
   mileageMin: number | null;
   mileageMax: number | null;
+  soldOnly: boolean;
 }
 
 /** 필터 옵션 (데이터에서 추출) */
@@ -129,11 +134,42 @@ export interface CalculateResponse {
   summary: string;
 }
 
+/** 기준차량 검차 상태 */
+export interface ReferenceInspection {
+  frame_exchange: number;
+  frame_bodywork: number;
+  frame_corrosion: number;
+  exterior_exchange: number;
+  exterior_bodywork: number;
+  exterior_corrosion: number;
+}
+
 /** 가격 산출 요청 */
 export interface CalculateRequest {
   target_vehicle: TargetVehicle;
   reference_auction_id: string;
   reference_auction_price: number;
+  reference_inspection?: ReferenceInspection;
+}
+
+/** 보정 기준 (LLM 분석 결과 or 사용자 수정) */
+export interface PricingCriteria {
+  mileage_rate_per_10k: number;   // %/만km
+  mileage_ceiling_km: number;     // 천장 km
+  year_rate_per_year: number;     // %/년
+}
+
+/** analyze-criteria 응답 */
+export interface AnalyzeCriteriaResponse {
+  criteria: PricingCriteria;
+  analysis_summary: string;
+  vehicles_analyzed: number;
+  confidence: string;
+}
+
+/** criteria 포함 가격 산출 요청 */
+export interface CalculateWithCriteriaRequest extends CalculateRequest {
+  criteria?: PricingCriteria;
 }
 
 /** 피드백 요청 — 전체 맥락 저장 (학습 데이터용) */

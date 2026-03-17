@@ -6,11 +6,14 @@ import type {
   FilterOptions,
   CalculateResponse,
   PricePredictionResponse,
+  AnalyzeCriteriaResponse,
+  PricingCriteria,
 } from "../types";
 import { COMPANY_TABS } from "../types";
-import { searchAuction, calculatePrice, predictPrice, submitFeedback } from "../api/client";
+import { searchAuction, calculateWithCriteria, analyzeCriteria, predictPrice, submitFeedback } from "../api/client";
 import AuctionCard from "./AuctionCard";
 import type { CalcState } from "./AuctionCard";
+import CriteriaPanel from "./CriteriaPanel";
 import PriceDetailModal from "./PriceDetailModal";
 import PricePredictionModal from "./PricePredictionModal";
 import DeleteModal from "./DeleteModal";
@@ -35,6 +38,7 @@ const EMPTY_FILTERS: AuctionFilters = {
   yearMax: null,
   mileageMin: null,
   mileageMax: null,
+  soldOnly: false,
 };
 
 const EMPTY_FILTER_OPTIONS: FilterOptions = {
@@ -84,6 +88,7 @@ function buildSmartDefaults(target: TargetVehicle): AuctionFilters {
     yearMax: target.vehicleYear + 2,
     mileageMin: null,
     mileageMax: null,
+    soldOnly: false,
   };
 }
 
@@ -101,6 +106,7 @@ function applyFilters(
     if (filters.yearMax != null && v.year != null && v.year > filters.yearMax) return false;
     if (filters.mileageMin != null && v.mileage != null && v.mileage < filters.mileageMin) return false;
     if (filters.mileageMax != null && v.mileage != null && v.mileage > filters.mileageMax) return false;
+    if (filters.soldOnly && v.status !== "완료") return false;
     return true;
   });
 }
@@ -147,6 +153,15 @@ export default function SearchResult({ target, onBack }: Props) {
   }>({ status: "idle" });
   const [showPredictionModal, setShowPredictionModal] = useState(false);
 
+  // 보정 기준 분석
+  const [criteriaState, setCriteriaState] = useState<{
+    data: AnalyzeCriteriaResponse | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: false, error: null });
+
+  const [currentCriteria, setCurrentCriteria] = useState<PricingCriteria | null>(null);
+
   const handlePredictPrice = async () => {
     setPredictionState({ status: "loading" });
     try {
@@ -157,6 +172,39 @@ export default function SearchResult({ target, onBack }: Props) {
       setPredictionState({
         status: "error",
         error: err instanceof Error ? err.message : "예측 실패",
+      });
+    }
+  };
+
+  // 보정 기준 분석
+  const handleAnalyzeCriteria = async (refId?: string, refPrice?: number) => {
+    setCriteriaState({ data: null, loading: true, error: null });
+    try {
+      const result = await analyzeCriteria({
+        target_vehicle: target,
+        reference_auction_id: refId || "auto",
+        reference_auction_price: refPrice || 0,
+      });
+      setCriteriaState({ data: result, loading: false, error: null });
+      setCurrentCriteria(result.criteria);
+    } catch (err) {
+      // LLM 실패 시 업계 기본값 사용
+      const age = new Date().getFullYear() - target.vehicleYear;
+      const defaults: PricingCriteria = {
+        mileage_rate_per_10k: age <= 3 ? 2.0 : age <= 6 ? 1.5 : 1.0,
+        mileage_ceiling_km: 200000,
+        year_rate_per_year: age <= 6 ? 2.5 : age <= 9 ? 2.0 : 1.5,
+      };
+      setCurrentCriteria(defaults);
+      setCriteriaState({
+        data: {
+          criteria: defaults,
+          analysis_summary: "LLM 분석 실패 — 업계 기본값 사용",
+          vehicles_analyzed: 0,
+          confidence: "낮음",
+        },
+        loading: false,
+        error: null,
       });
     }
   };
@@ -192,6 +240,14 @@ export default function SearchResult({ target, onBack }: Props) {
           filterOptions,
         },
       }));
+
+      // 첫 번째 탭 로드 시 보정 기준 분석 자동 실행
+      if (!criteriaState.data && !criteriaState.loading && res.results.length > 0) {
+        const firstWithPrice = res.results.find((v) => v.auction_price);
+        if (firstWithPrice) {
+          handleAnalyzeCriteria(firstWithPrice.auction_id, firstWithPrice.auction_price!);
+        }
+      }
     } catch (err) {
       setTabDataMap((prev) => ({
         ...prev,
@@ -267,7 +323,8 @@ export default function SearchResult({ target, onBack }: Props) {
     const f = currentTabData.filters;
     return f.trim !== "" || f.fuel !== "" || f.color !== "" ||
       f.yearMin != null || f.yearMax != null ||
-      f.mileageMin != null || f.mileageMax != null;
+      f.mileageMin != null || f.mileageMax != null ||
+      f.soldOnly;
   };
 
   // 삭제
@@ -295,10 +352,23 @@ export default function SearchResult({ target, onBack }: Props) {
       [ref.auction_id]: { status: "loading" },
     }));
     try {
-      const calc = await calculatePrice({
+      const calc = await calculateWithCriteria({
         target_vehicle: target,
         reference_auction_id: ref.auction_id,
         reference_auction_price: ref.auction_price,
+        criteria: currentCriteria ?? {
+          mileage_rate_per_10k: 1.5,
+          mileage_ceiling_km: 200000,
+          year_rate_per_year: 2.5,
+        },
+        reference_inspection: {
+          frame_exchange: ref.frame_exchange ?? 0,
+          frame_bodywork: ref.frame_bodywork ?? 0,
+          frame_corrosion: ref.frame_corrosion ?? 0,
+          exterior_exchange: ref.exterior_exchange ?? 0,
+          exterior_bodywork: ref.exterior_bodywork ?? 0,
+          exterior_corrosion: ref.exterior_corrosion ?? 0,
+        },
       });
       setCalcStates((prev) => ({
         ...prev,
@@ -371,9 +441,7 @@ export default function SearchResult({ target, onBack }: Props) {
               onClick={() => setShowPredictionModal(true)}
               className="bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm flex items-center gap-2"
             >
-              <span>소매 {predictionState.data.estimated_retail.toLocaleString()}만</span>
-              <span className="opacity-75">|</span>
-              <span>낙찰 {predictionState.data.estimated_auction.toLocaleString()}만</span>
+              <span>예상 낙찰가 {predictionState.data.estimated_auction.toLocaleString()}만</span>
             </button>
           )}
           {predictionState.status === "error" && (
@@ -569,6 +637,16 @@ export default function SearchResult({ target, onBack }: Props) {
             )}
           </div>
 
+          {/* 판매완료만 (엔카 탭) */}
+          {activeTabId === "KYMaGfcnzwGsvbDm6Z91" && (
+            <button
+              onClick={() => updateFilter({ soldOnly: !currentTabData.filters.soldOnly })}
+              className={`${chipSelectClass} cursor-pointer ${selectChipClass(currentTabData.filters.soldOnly)}`}
+            >
+              판매완료만
+            </button>
+          )}
+
           {/* 필터 초기화 */}
           {hasActiveFilter() && (
             <button
@@ -580,6 +658,16 @@ export default function SearchResult({ target, onBack }: Props) {
           )}
         </div>
       )}
+
+      {/* 보정 기준 패널 */}
+      <CriteriaPanel
+        target={target}
+        data={criteriaState.data}
+        loading={criteriaState.loading}
+        error={criteriaState.error}
+        onCriteriaChange={setCurrentCriteria}
+        onReanalyze={handleAnalyzeCriteria}
+      />
 
       {/* 에러 */}
       {currentTabData.error && (

@@ -1,9 +1,11 @@
 import type {
   CalculateRequest,
   CalculateResponse,
+  CalculateWithCriteriaRequest,
   FeedbackRequest,
   SearchAuctionResponse,
   PricePredictionResponse,
+  AnalyzeCriteriaResponse,
   ModelInfo,
   GenerationInfo,
   VariantInfo,
@@ -51,6 +53,30 @@ export async function searchAuction(params: {
 
 export async function calculatePrice(
   req: CalculateRequest
+): Promise<CalculateResponse> {
+  return request<CalculateResponse>("/calculate", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+// === 보정 기준 분석 ===
+
+export async function analyzeCriteria(req: {
+  target_vehicle: TargetVehicle;
+  reference_auction_id: string;
+  reference_auction_price: number;
+}): Promise<AnalyzeCriteriaResponse> {
+  return request<AnalyzeCriteriaResponse>("/analyze-criteria", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+// === 보정 기준 포함 가격 산출 ===
+
+export async function calculateWithCriteria(
+  req: CalculateWithCriteriaRequest
 ): Promise<CalculateResponse> {
   return request<CalculateResponse>("/calculate", {
     method: "POST",
