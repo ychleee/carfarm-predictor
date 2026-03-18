@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,42 @@ _STRUCTURAL_GRADE = {            # 골격 손상 부위수 → %p
 _STRUCTURAL_DEFAULT = 20.0       # 5부위 이상
 
 
-def _calc_inspection_adj(reference: dict) -> tuple[float, list[str]]:
-    """기준차량 사고이력 → 대상(AA) 기준 가산 %p 와 상세 내역."""
+def _inspection_age_weight(year: int, mileage: int = 0) -> tuple[float, str]:
+    """연식/주행거리에 따른 검차 보정 가중치 (신차=1.0, 오래될수록 감소).
+
+    Returns:
+        (weight, 설명 문자열)
+    """
+    age = datetime.now().year - year if year > 0 else 0
+
+    if age <= 3:
+        w = 1.0
+    elif age <= 6:
+        w = 0.5
+    elif age <= 9:
+        w = 0.3
+    else:
+        w = 0.15
+
+    # 고주행 추가 감소 (15만km 이상)
+    mileage_discount = ""
+    if mileage > 150000:
+        w *= 0.7
+        mileage_discount = f", 고주행({mileage:,}km) ×0.7"
+
+    desc = f"연식 가중치: {age}년차 → ×{w:.1f}{mileage_discount}"
+    return w, desc
+
+
+def _calc_inspection_adj(
+    reference: dict,
+    target_year: int = 0,
+    target_mileage: int = 0,
+) -> tuple[float, list[str]]:
+    """기준차량 사고이력 → 대상(AA) 기준 가산 %p 와 상세 내역.
+
+    target_year/target_mileage 제공 시 연식/주행거리 기반 가중치 적용.
+    """
     part_damages = reference.get("part_damages") or []
 
     # part_damages가 있으면 거기서 파생, 없으면 직접 필드 사용
@@ -67,13 +102,13 @@ def _calc_inspection_adj(reference: dict) -> tuple[float, list[str]]:
     # 비골격 교환 = 전체 교환 - 골격 교환
     non_structural_exchange = max(exchange_count - structural_count, 0)
 
-    adj_pct = 0.0
+    raw_pct = 0.0
     details: list[str] = []
 
     # 1) 골격사고
     if structural_count > 0:
         grade_pct = _STRUCTURAL_GRADE.get(structural_count, _STRUCTURAL_DEFAULT)
-        adj_pct += grade_pct
+        raw_pct += grade_pct
         details.append(
             f"골격손상 {structural_count}부위 → +{grade_pct:.0f}%p"
         )
@@ -81,7 +116,7 @@ def _calc_inspection_adj(reference: dict) -> tuple[float, list[str]]:
     # 2) 외판 교환
     if non_structural_exchange > 0:
         ex_pct = non_structural_exchange * _EXCHANGE_RATE_PER_PART
-        adj_pct += ex_pct
+        raw_pct += ex_pct
         details.append(
             f"외판교환 {non_structural_exchange}부위 × "
             f"{_EXCHANGE_RATE_PER_PART:.0f}%p = +{ex_pct:.0f}%p"
@@ -90,13 +125,22 @@ def _calc_inspection_adj(reference: dict) -> tuple[float, list[str]]:
     # 3) 판금
     if bodywork_count > 0:
         bw_pct = bodywork_count * _BODYWORK_RATE_PER_PART
-        adj_pct += bw_pct
+        raw_pct += bw_pct
         details.append(
             f"판금 {bodywork_count}부위 × "
             f"{_BODYWORK_RATE_PER_PART:.0f}%p = +{bw_pct:.0f}%p"
         )
 
-    return adj_pct, details
+    # 4) 연식/주행거리 기반 가중치 적용
+    if target_year > 0 and raw_pct > 0:
+        weight, weight_desc = _inspection_age_weight(target_year, target_mileage)
+        if weight < 1.0:
+            adj_pct = round(raw_pct * weight, 1)
+            details.append(f"{weight_desc}")
+            details.append(f"보정전 {raw_pct:.1f}%p × {weight:.1f} = {adj_pct:.1f}%p")
+            return adj_pct, details
+
+    return raw_pct, details
 
 
 def _to_man_won(value: float) -> float:
@@ -215,8 +259,10 @@ def calculate_with_criteria(
             "data_source": f"LLM 분석 기준: 연당 {year_rate:.1f}%p",
         })
 
-        # ── 3. 검차 보정 (대상=AA, 기준차 사고이력 만큼 가산) ──
-        inspect_adj_pct, inspect_details = _calc_inspection_adj(reference)
+        # ── 3. 검차 보정 (대상=AA, 기준차 사고이력 만큼 가산 — 연식/주행거리 가중) ──
+        inspect_adj_pct, inspect_details = _calc_inspection_adj(
+            reference, target_year=target_year, target_mileage=target_mileage,
+        )
         ratio_after_inspect = ratio_after_year + inspect_adj_pct
 
         inspect_amount = round(inspect_adj_pct / 100 * tgt_price, 1) if inspect_adj_pct > 0 else 0
@@ -314,8 +360,10 @@ def calculate_with_criteria(
             "data_source": f"LLM 분석 기준: 연당 {year_rate:.1f}% (절대금액 방식)",
         })
 
-        # ── 3. 검차 보정 (폴백) ──
-        inspect_adj_pct, inspect_details = _calc_inspection_adj(reference)
+        # ── 3. 검차 보정 (폴백 — 연식/주행거리 가중) ──
+        inspect_adj_pct, inspect_details = _calc_inspection_adj(
+            reference, target_year=target_year, target_mileage=target_mileage,
+        )
         inspect_amount = round(inspect_adj_pct / 100 * ref_auction, 1) if inspect_adj_pct > 0 else 0
         adjustments.append({
             "rule_name": "검차 보정",

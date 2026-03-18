@@ -37,8 +37,12 @@ class PredictPriceResponse(BaseModel):
     estimated_auction: float
     estimated_retail: float
     confidence: str
-    reasoning: str
+    reasoning: str = ""
     factors: list[PriceFactorResponse] = []
+    auction_reasoning: str = ""
+    retail_reasoning: str = ""
+    auction_factors: list[PriceFactorResponse] = []
+    retail_factors: list[PriceFactorResponse] = []
     comparable_summary: str = ""
     key_comparables: list[str] = []
     vehicles_analyzed: int = 0
@@ -101,6 +105,14 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             reasoning=result.reasoning,
             factors=[
                 PriceFactorResponse(**f) for f in result.factors
+            ],
+            auction_reasoning=result.auction_reasoning,
+            retail_reasoning=result.retail_reasoning,
+            auction_factors=[
+                PriceFactorResponse(**f) for f in result.auction_factors
+            ],
+            retail_factors=[
+                PriceFactorResponse(**f) for f in result.retail_factors
             ],
             comparable_summary=result.comparable_summary,
             key_comparables=result.key_comparables,

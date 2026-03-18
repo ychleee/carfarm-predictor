@@ -140,6 +140,7 @@ async def search_retail(
             "exterior_bodywork": r.get("exterior_bodywork", 0),
             "exterior_corrosion": r.get("exterior_corrosion", 0),
             "company_id": r.get("company_id", ""),
+            "is_export": bool(r.get("is_export", 0)),
         })
     return {"count": len(mapped), "results": mapped}
 
@@ -166,6 +167,7 @@ async def search_auction_endpoint(
         fuel=fuel, trim=trim, mileage_max=mileage_max,
         usage=usage, limit=limit, sort_by=sort_by,
         company_id=company_id,
+        domestic_only=False,
     )
     # 한글키 → 영문키 변환 (차명 + 트림 결합)
     mapped = []
@@ -195,6 +197,7 @@ async def search_auction_endpoint(
             "exterior_bodywork": r.get("exterior_bodywork", 0),
             "exterior_corrosion": r.get("exterior_corrosion", 0),
             "company_id": r.get("company_id", ""),
+            "is_export": bool(r.get("is_export", 0)),
             "has_encar_diagnosis": False,
             "status": r.get("status", ""),
         })
