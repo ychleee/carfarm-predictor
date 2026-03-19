@@ -308,12 +308,18 @@ _FUEL_SYNONYMS = {
 
 
 def _match_contains(value: str | None, keyword: str | None) -> bool:
-    """대소문자 무시 부분 문자열 매칭"""
+    """대소문자·공백 무시 부분 문자열 매칭"""
     if not keyword:
         return True
     if not value:
         return False
-    return keyword.lower() in value.lower()
+    # 일반 매칭
+    if keyword.lower() in value.lower():
+        return True
+    # 공백 제거 후 재매칭 (예: "ED 에디션" vs "ED에디션")
+    kw_compact = keyword.lower().replace(" ", "")
+    val_compact = value.lower().replace(" ", "")
+    return kw_compact in val_compact
 
 
 def _match_fuel(value: str | None, keyword: str | None) -> bool:
@@ -438,8 +444,8 @@ def search_retail_db(
             if not _match_maker(vehicle_maker, maker):
                 continue
 
-        # 소매가 필수
-        retail_price = _safe_number(data.get("estimatedPurchasePrice"))
+        # 소매가 필수 (estimatedRetailPrice 우선, 없으면 estimatedPurchasePrice 폴백)
+        retail_price = _safe_number(data.get("estimatedRetailPrice")) or _safe_number(data.get("estimatedPurchasePrice"))
         if retail_price <= 0:
             continue
 
@@ -672,17 +678,26 @@ def get_retail_detail(doc_id: str) -> dict | None:
     return _to_retail_dict(doc.id, doc.to_dict())
 
 
+def _normalize_price(price: float) -> float:
+    """가격을 만원 단위로 정규화 (원 단위면 변환, 만원 단위면 그대로)."""
+    if price > 100000:  # 10만원 초과면 원 단위로 판단
+        return round(price / 10000, 1)
+    return price
+
+
 def get_price_stats(
     maker: str,
     model: str,
     generation: str | None = None,
     year: int | None = None,
     months: int = 3,
+    price_type: str = "auction",
 ) -> dict:
     """
     최근 N개월 시세 통계.
 
     Firestore에서 maker+model 조건 차량을 가져와 Python으로 통계 계산.
+    price_type: "auction" → actualBidPrice, "retail" → estimatedPurchasePrice
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
@@ -699,10 +714,16 @@ def get_price_stats(
     for doc in docs:
         data = doc.to_dict()
 
-        # 유효 낙찰가
-        price = _safe_number(data.get("actualBidPrice"))
+        # 유효 가격 (소매는 estimatedRetailPrice 우선)
+        if price_type == "auction":
+            price = _safe_number(data.get("actualBidPrice"))
+        else:
+            price = _safe_number(data.get("estimatedRetailPrice")) or _safe_number(data.get("estimatedPurchasePrice"))
         if price <= 0:
             continue
+
+        # 만원 단위로 정규화
+        price = _normalize_price(price)
 
         # 내수만
         dest = data.get("saleDestination") or ""
@@ -772,7 +793,8 @@ def _tokenize(text: str) -> list[str]:
 
 def _to_retail_dict(doc_id: str, data: dict) -> dict:
     """엔카 소매가 차량용 dict"""
-    retail_price = _safe_number(data.get("estimatedPurchasePrice"))
+    # estimatedRetailPrice 우선, 없으면 estimatedPurchasePrice 폴백
+    retail_price = _safe_number(data.get("estimatedRetailPrice")) or _safe_number(data.get("estimatedPurchasePrice"))
     if retail_price > 100000:
         retail_price = round(retail_price / 10000, 0)
 

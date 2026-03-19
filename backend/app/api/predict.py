@@ -35,6 +35,8 @@ class StatsResponse(BaseModel):
 
 class PredictPriceResponse(BaseModel):
     estimated_auction: float
+    estimated_auction_export: float = 0
+    last_export_date: str = ""
     estimated_retail: float
     confidence: str
     reasoning: str = ""
@@ -100,6 +102,8 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
 
         return PredictPriceResponse(
             estimated_auction=result.estimated_auction,
+            estimated_auction_export=result.estimated_auction_export,
+            last_export_date=result.last_export_date,
             estimated_retail=result.estimated_retail,
             confidence=result.confidence,
             reasoning=result.reasoning,
