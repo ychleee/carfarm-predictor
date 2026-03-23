@@ -749,7 +749,7 @@ def get_price_stats(
             if sale_date < cutoff:
                 continue
 
-        prices.append(price)
+        prices.append(float(price))
 
     if not prices:
         return {
@@ -773,7 +773,7 @@ def get_price_stats(
         "median": round(statistics.median(prices), 1),
         "min": min(prices),
         "max": max(prices),
-        "std": round(statistics.stdev(prices), 1) if len(prices) > 1 else 0,
+        "std": round((sum((p - statistics.mean(prices)) ** 2 for p in prices) / (len(prices) - 1)) ** 0.5, 1) if len(prices) > 1 else 0,
     }
 
 
