@@ -79,6 +79,8 @@ class CalculateRequest(BaseModel):
     reference_auction_price: float       # 기준차량 낙찰가 (만원)
     criteria: Optional[PricingCriteriaInput] = None  # 제공 시 비율 기반 엔진 사용
     reference_inspection: Optional[ReferenceInspection] = None  # 검차 상태 (엔카 보강)
+    reference_factory_price: Optional[float] = None  # 기준차량 출고가 (만원, 프론트엔드 보강)
+    reference_base_price: Optional[float] = None     # 기준차량 기본가 (만원, 프론트엔드 보강)
 
 
 @router.post("/calculate", response_model=CalculateResponse)
@@ -117,6 +119,22 @@ async def calculate_price(request: CalculateRequest):
             "exterior_bodywork": ref_detail.get("exterior_bodywork", 0),
             "exterior_corrosion": ref_detail.get("exterior_corrosion", 0),
         })
+
+    # 프론트엔드에서 전달된 출고가/기본가로 보강 (엔카 API enrichment 반영)
+    # 프론트엔드 데이터가 Firestore 폴백보다 정확하므로 항상 우선 사용
+    has_frontend_price = (
+        (request.reference_factory_price and request.reference_factory_price > 0)
+        or (request.reference_base_price and request.reference_base_price > 0)
+    )
+    if has_frontend_price:
+        fp = request.reference_factory_price or 0
+        bp = request.reference_base_price or 0
+        reference["factory_price"] = fp
+        reference["base_price"] = bp
+        logger.info(
+            "출고가/기본가 보강 (프론트엔드) — 출고가: %.0f만, 기본가: %.0f만",
+            fp, bp,
+        )
 
     # 프론트엔드에서 전달된 검차 데이터로 보강 (엔카 API enrichment 반영)
     if request.reference_inspection:

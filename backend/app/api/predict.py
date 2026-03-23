@@ -9,9 +9,11 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
+from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from pydantic import BaseModel
 
 from app.schemas.vehicle import TargetVehicleSchema
+from app.services.firestore_client import get_firestore_db
 from app.services.llm_price_predictor import predict_price
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ class PredictPriceResponse(BaseModel):
     factors: list[PriceFactorResponse] = []
     auction_reasoning: str = ""
     retail_reasoning: str = ""
+    export_reasoning: str = ""
     auction_factors: list[PriceFactorResponse] = []
     retail_factors: list[PriceFactorResponse] = []
     comparable_summary: str = ""
@@ -112,6 +115,7 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             ],
             auction_reasoning=result.auction_reasoning,
             retail_reasoning=result.retail_reasoning,
+            export_reasoning=result.export_reasoning,
             auction_factors=[
                 PriceFactorResponse(**f) for f in result.auction_factors
             ],
@@ -131,3 +135,121 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             status_code=500,
             detail=f"가격 예측 오류: {type(e).__name__}: {str(e)}",
         )
+
+
+# ── 비동기 예측 (Firestore 저장) ──
+
+
+@router.post("/predict-price-async")
+async def predict_price_async_endpoint(
+    target: TargetVehicleSchema,
+):
+    """
+    AI 가격 예측 — Firestore에 결과 저장.
+
+    Firestore에 processing 마킹 후 동기 실행.
+    Cloud Run BackgroundTasks는 응답 후 CPU 스로틀링으로 작업이 완료되지 않으므로,
+    요청 내에서 동기적으로 처리한다. 클라이언트는 Firestore 리스너로 상태를 추적.
+    """
+    vehicle_id = target.vehicle_id
+    if not vehicle_id:
+        raise HTTPException(status_code=400, detail="vehicle_id 필수")
+
+    db = get_firestore_db()
+    doc_ref = db.collection("aiPricePredictions").document(vehicle_id)
+
+    # 즉시 processing 상태 기록 (앱의 Firestore 리스너가 바로 감지)
+    doc_ref.set({
+        "status": "processing",
+        "createdAt": SERVER_TIMESTAMP,
+        "updatedAt": SERVER_TIMESTAMP,
+        "error": None,
+    })
+
+    # 동기 실행 (Cloud Run 요청 컨텍스트 내에서 CPU 보장)
+    _run_prediction_sync(target, vehicle_id, doc_ref)
+
+    return {"status": "done"}
+
+
+def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
+    """백그라운드에서 예측 실행 후 Firestore 업데이트 (동기 함수)."""
+    try:
+        target_dict = {
+            "maker": target.maker,
+            "model": target.model,
+            "year": target.year,
+            "mileage": target.mileage,
+            "fuel": target.fuel,
+            "trim": target.trim,
+            "color": target.color,
+            "options": target.options,
+            "exchange_count": target.exchange_count,
+            "bodywork_count": target.bodywork_count,
+            "generation": target.generation,
+            "part_damages": [
+                {"part": pd.part, "damage_type": pd.damage_type}
+                for pd in target.part_damages
+            ],
+        }
+
+        result = predict_price(target_dict)
+
+        logger.info(
+            "비동기 가격 예측 완료 — vehicle_id=%s, 소매: %.0f만, 낙찰: %.0f만",
+            vehicle_id,
+            result.estimated_retail,
+            result.estimated_auction,
+        )
+
+        # Firestore에 결과 저장
+        doc_ref.update({
+            "status": "done",
+            "estimatedRetail": result.estimated_retail,
+            "estimatedAuction": result.estimated_auction,
+            "estimatedAuctionExport": result.estimated_auction_export,
+            "lastExportDate": result.last_export_date,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+            "auctionReasoning": result.auction_reasoning,
+            "retailReasoning": result.retail_reasoning,
+            "exportReasoning": result.export_reasoning,
+            "auctionFactors": [
+                {"factor": f["factor"], "impact": f["impact"], "description": f["description"]}
+                for f in result.auction_factors
+            ],
+            "retailFactors": [
+                {"factor": f["factor"], "impact": f["impact"], "description": f["description"]}
+                for f in result.retail_factors
+            ],
+            "comparableSummary": result.comparable_summary,
+            "keyComparables": result.key_comparables,
+            "vehiclesAnalyzed": result.vehicles_analyzed,
+            "auctionStats": {
+                "count": result.auction_stats.get("count", 0),
+                "mean": result.auction_stats.get("mean", 0),
+                "median": result.auction_stats.get("median", 0),
+                "min": result.auction_stats.get("min", 0),
+                "max": result.auction_stats.get("max", 0),
+            },
+            "retailStats": {
+                "count": result.retail_stats.get("count", 0),
+                "mean": result.retail_stats.get("mean", 0),
+                "median": result.retail_stats.get("median", 0),
+                "min": result.retail_stats.get("min", 0),
+                "max": result.retail_stats.get("max", 0),
+            },
+            "updatedAt": SERVER_TIMESTAMP,
+            "error": None,
+        })
+
+    except Exception as e:
+        logger.exception("비동기 가격 예측 오류 — vehicle_id=%s", vehicle_id)
+        try:
+            doc_ref.update({
+                "status": "error",
+                "error": f"{type(e).__name__}: {str(e)}",
+                "updatedAt": SERVER_TIMESTAMP,
+            })
+        except Exception:
+            logger.exception("Firestore 에러 업데이트 실패")

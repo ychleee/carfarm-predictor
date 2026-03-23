@@ -24,6 +24,9 @@ class TargetVehicleSchema(BaseModel):
         extra="ignore",         # Firestore 전용 필드 자동 무시
     )
 
+    # --- 식별 필드 ---
+    vehicle_id: str = Field(default="", alias="vehicleId")
+
     # --- 핵심 필드 (Isaac VehicleModel 필드명 통일) ---
     maker: str = Field(alias="vehicleMaker")
     model: str = Field(alias="vehicleModel")

@@ -449,6 +449,10 @@ def search_retail_db(
         if retail_price <= 0:
             continue
 
+        # 낙찰가가 있는 차량은 헤이딜러 데이터 → 소매 목록에서 제외
+        if _safe_number(data.get("actualBidPrice")) > 0:
+            continue
+
         # 연식 범위
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -512,6 +516,7 @@ def search_auction_db(
     use_company_filter_in_query = False
     seen_ids: set[str] = set()
     docs: list = []
+    fetch_limit = min(limit * 10, 5000)
     tokens = _search_token_variants(model_lower) if model_lower else [""]
     for token in tokens:
         try:
@@ -522,7 +527,7 @@ def search_auction_db(
             if token:
                 q = q.where(filter=FieldFilter("searchTokens", "array_contains", token))
             q = q.order_by("saleDate", direction="DESCENDING")
-            for doc in q.get():
+            for doc in q.limit(fetch_limit).get():
                 if doc.id not in seen_ids:
                     seen_ids.add(doc.id)
                     docs.append(doc)
@@ -533,7 +538,7 @@ def search_auction_db(
             else:
                 q = col
             q = q.order_by("saleDate", direction="DESCENDING")
-            for doc in q.get():
+            for doc in q.limit(fetch_limit).get():
                 if doc.id not in seen_ids:
                     seen_ids.add(doc.id)
                     docs.append(doc)
