@@ -7,6 +7,7 @@ Claude Sonnet이 데이터 기반으로 적정 가격을 추론합니다.
 
 import asyncio
 import logging
+import math
 
 from fastapi import APIRouter, HTTPException
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
@@ -93,15 +94,9 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             result.output_tokens,
         )
 
-        # stats dict → StatsResponse 변환
+        # stats dict → StatsResponse 변환 (NaN-safe)
         def _to_stats(d: dict) -> StatsResponse:
-            return StatsResponse(
-                count=d.get("count", 0),
-                mean=d.get("mean", 0),
-                median=d.get("median", 0),
-                min=d.get("min", 0),
-                max=d.get("max", 0),
-            )
+            return StatsResponse(**_safe_stats(d))
 
         return PredictPriceResponse(
             estimated_auction=result.estimated_auction,
@@ -172,6 +167,28 @@ async def predict_price_async_endpoint(
     return {"status": "done"}
 
 
+def _safe_float(val, default=0) -> float:
+    """NaN/inf → 0 변환 (Firestore에 NaN 저장되면 Flutter .round()에서 크래시)"""
+    try:
+        v = float(val)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return v
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_stats(stats: dict) -> dict:
+    """stats dict의 숫자 값을 NaN-safe하게 변환"""
+    return {
+        "count": int(_safe_float(stats.get("count", 0))),
+        "mean": _safe_float(stats.get("mean", 0)),
+        "median": _safe_float(stats.get("median", 0)),
+        "min": _safe_float(stats.get("min", 0)),
+        "max": _safe_float(stats.get("max", 0)),
+    }
+
+
 def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
     """백그라운드에서 예측 실행 후 Firestore 업데이트 (동기 함수)."""
     try:
@@ -225,20 +242,8 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "comparableSummary": result.comparable_summary,
             "keyComparables": result.key_comparables,
             "vehiclesAnalyzed": result.vehicles_analyzed,
-            "auctionStats": {
-                "count": result.auction_stats.get("count", 0),
-                "mean": result.auction_stats.get("mean", 0),
-                "median": result.auction_stats.get("median", 0),
-                "min": result.auction_stats.get("min", 0),
-                "max": result.auction_stats.get("max", 0),
-            },
-            "retailStats": {
-                "count": result.retail_stats.get("count", 0),
-                "mean": result.retail_stats.get("mean", 0),
-                "median": result.retail_stats.get("median", 0),
-                "min": result.retail_stats.get("min", 0),
-                "max": result.retail_stats.get("max", 0),
-            },
+            "auctionStats": _safe_stats(result.auction_stats),
+            "retailStats": _safe_stats(result.retail_stats),
             "updatedAt": SERVER_TIMESTAMP,
             "error": None,
         })

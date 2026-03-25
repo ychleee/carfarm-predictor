@@ -7,6 +7,7 @@ CarFarm v2.3 — Firestore 기반 차량 DB
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -40,13 +41,18 @@ def _search_token_variants(token: str) -> list[str]:
 # =========================================================================
 
 def _safe_number(val, default=0) -> float | int:
-    """문자열/None → 숫자 (콤마 포함 문자열 지원)"""
+    """문자열/None → 숫자 (콤마 포함 문자열 지원, NaN/inf → default)"""
     if val is None:
         return default
     try:
         if isinstance(val, str):
-            return float(val.replace(",", ""))
-        return val
+            result = float(val.replace(",", ""))
+        else:
+            result = val
+        # NaN/inf 방지 (Firestore에 기록되면 Flutter .round()에서 크래시)
+        if isinstance(result, float) and (math.isnan(result) or math.isinf(result)):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 
