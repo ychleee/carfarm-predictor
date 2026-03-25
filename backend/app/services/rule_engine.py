@@ -163,18 +163,6 @@ class RuleEngine:
         step = self._adjust_mileage(target, reference, base_price)
         result.adjustments.append(step)
 
-        # ── 룰 2: 교환 보정 ──
-        step = self._adjust_exchange(target, reference, base_price)
-        result.adjustments.append(step)
-
-        # ── 룰 3: 판금 보정 ──
-        step = self._adjust_bodywork(target, reference, base_price)
-        result.adjustments.append(step)
-
-        # ── 룰 4: 골격사고 보정 ──
-        step = self._adjust_structural(target, reference, base_price)
-        result.adjustments.append(step)
-
         # ── 룰 5: 색상 보정 ──
         step = self._adjust_color(target, reference)
         result.adjustments.append(step)
@@ -978,33 +966,90 @@ class RuleEngine:
         공식:
           보정된 가격 = 기준가 + 총 보정액
           예상 낙찰가 = 보정된 가격 (이미 낙찰가 기준이므로)
-          추정 소매가 = 예상 낙찰가 / 경매 할인율
-          최소 마진 150만원 적용
+          추정 소매가 = 시장 데이터 기반 추정 (폴백: 경매 할인율 역산)
         """
+        from app.services.retail_estimator import estimate_retail_by_market, estimate_auction_by_market
+
         calc_rules = self.rules['price_calculation']
 
         adjusted_price = result.reference_price + result.total_adjustment
-
-        # 경매 할인율 역산 → 소매가 추정
-        is_import = target.segment and '수입' in target.segment
-        discount = calc_rules['auction_discount'].get(
-            'import' if is_import else 'domestic', 0.90
-        )
-        estimated_retail = adjusted_price / discount
-
-        # 최소 마진
-        min_margin = calc_rules.get('min_margin', 150)
-        if estimated_retail - adjusted_price < min_margin:
-            estimated_retail = adjusted_price + min_margin
-
         result.estimated_auction = round(adjusted_price, 1)
-        result.estimated_retail = round(estimated_retail, 1)
+
+        # ── 낙찰가: 시장 데이터 단독 ──
+        auction_market = estimate_auction_by_market(
+            maker=target.maker,
+            model=target.model,
+            trim=target.trim,
+            year=target.year,
+            mileage=target.mileage,
+            factory_price=target.factory_price,
+            base_price=target.base_price,
+        )
+        if auction_market.success:
+            result.estimated_auction = auction_market.estimated_auction
+        result.adjustments.append(AdjustmentStep(
+            rule_name="낙찰가 추정 (시장 데이터)",
+            rule_id="auction_market",
+            description=(
+                f"같은 트림·연식 낙찰 {auction_market.vehicles_found}건 분석 → "
+                f"추정 낙찰가 {result.estimated_auction:,.0f}만원"
+                if auction_market.success
+                else f"시장 데이터 부족 — 룰엔진 값 유지 ({result.estimated_auction:,.0f}만원)"
+            ),
+            amount=0,
+            details=auction_market.details if auction_market.success else "시장 데이터 부족",
+            data_source=(
+                f"시장 데이터 추이 ({auction_market.vehicles_found}건)"
+                if auction_market.success else "룰엔진 폴백"
+            ),
+        ))
+
+        # ── 소매가 추정: 시장 데이터 기반 ──
+        retail_result = estimate_retail_by_market(
+            maker=target.maker,
+            model=target.model,
+            trim=target.trim,
+            year=target.year,
+            mileage=target.mileage,
+            factory_price=target.factory_price,
+            base_price=target.base_price,
+        )
+
+        result.estimated_retail = retail_result.estimated_retail if retail_result.success else 0
+        result.adjustments.append(AdjustmentStep(
+            rule_name="소매가 추정 (비율 추이)",
+            rule_id="retail_estimation",
+            description=(
+                f"같은 트림·연식 소매 {retail_result.vehicles_found}건 분석 → "
+                f"비율 {retail_result.estimated_ratio:.1f}% × "
+                f"{target.factory_price or target.base_price:,.0f}만 = "
+                f"추정 소매가 {result.estimated_retail:,.0f}만원"
+                if retail_result.success
+                else f"소매가 추정 불가: {retail_result.details}"
+            ),
+            amount=0,
+            details=retail_result.details,
+            data_source=(
+                f"시장 데이터 비율 추이 ({retail_result.vehicles_found}건)"
+                if retail_result.success else "데이터 부족"
+            ),
+        ))
 
         # 신뢰도 판단
         if has_trim_warning:
             result.confidence = "낮음"
+        elif retail_result.success:
+            non_zero = sum(1 for s in result.adjustments
+                          if abs(s.amount) > 0 and s.rule_id != "retail_estimation")
+            if retail_result.confidence == "높음" and non_zero <= 1:
+                result.confidence = "높음"
+            elif retail_result.confidence == "낮음" or non_zero >= 4:
+                result.confidence = "낮음"
+            else:
+                result.confidence = "보통"
         else:
-            non_zero = sum(1 for s in result.adjustments if abs(s.amount) > 0)
+            non_zero = sum(1 for s in result.adjustments
+                          if abs(s.amount) > 0 and s.rule_id != "retail_estimation")
             if non_zero <= 1:
                 result.confidence = "높음"
             elif non_zero <= 3:
@@ -1017,7 +1062,8 @@ class RuleEngine:
             f"기준가 {result.reference_price:.0f}만원"
             f" → 보정 {result.total_adjustment:+.0f}만원"
             f" → 예상 낙찰가 {result.estimated_auction:.0f}만원"
-            f" (소매가 {result.estimated_retail:.0f}만원)"
+            + (f" | 소매가 {result.estimated_retail:.0f}만원 (비율 {retail_result.estimated_ratio:.1f}%)"
+               if retail_result.success else " | 소매가 추정 불가")
         )
 
         return result

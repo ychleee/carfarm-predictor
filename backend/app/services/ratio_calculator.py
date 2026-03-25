@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from app.services.retail_estimator import estimate_retail_by_market, estimate_auction_by_market
+
 logger = logging.getLogger(__name__)
 
 # 골격(프레임) 부위 — firestore_db._FRAME_PARTS 와 동일
@@ -259,52 +261,69 @@ def calculate_with_criteria(
             "data_source": f"LLM 분석 기준: 연당 {year_rate:.1f}%p",
         })
 
-        # ── 3. 검차 보정 (대상=AA, 기준차 사고이력 만큼 가산 — 연식/주행거리 가중) ──
-        inspect_adj_pct, inspect_details = _calc_inspection_adj(
-            reference, target_year=target_year, target_mileage=target_mileage,
-        )
-        ratio_after_inspect = ratio_after_year + inspect_adj_pct
-
-        inspect_amount = round(inspect_adj_pct / 100 * tgt_price, 1) if inspect_adj_pct > 0 else 0
-        adjustments.append({
-            "rule_name": "검차 보정",
-            "rule_id": "inspection",
-            "description": (
-                f"기준차 사고이력 → 대상 AA 기준 +{inspect_adj_pct:.1f}%p"
-                if inspect_adj_pct > 0
-                else "기준차량도 무사고 — 검차 보정 없음"
-            ),
-            "amount": inspect_amount,
-            "details": (
-                ("\n".join(inspect_details) + f"\n→ {ratio_after_year:.1f}% +{inspect_adj_pct:.1f}%p = {ratio_after_inspect:.1f}%")
-                if inspect_adj_pct > 0
-                else f"대상: AA (무사고), 기준: 사고이력 없음\n→ 비율 변동 없음 ({ratio_after_year:.1f}%)"
-            ),
-            "data_source": "업계 기준: 교환 2%p/부위, 판금 1%p/부위, 골격 15~20%p",
-        })
-
         # ── 최종 산출 ──
-        adjusted_ratio_pct = ratio_after_inspect
+        adjusted_ratio_pct = ratio_after_year
         adjusted_ratio = adjusted_ratio_pct / 100
-        total_adj_pct = mileage_adj_pct + year_adj_pct + inspect_adj_pct
+        total_adj_pct = mileage_adj_pct + year_adj_pct
 
         estimated_auction = round(adjusted_ratio * tgt_price, 1)
 
-        # 소매가 추정
-        segment = target.get("segment", "") or ""
-        is_import = "수입" in segment
-        discount = 0.88 if is_import else 0.90
-        estimated_retail = round(estimated_auction / discount, 1)
-
-        min_margin = 150
-        if estimated_retail - estimated_auction < min_margin:
-            estimated_retail = round(estimated_auction + min_margin, 1)
+        # ── 낙찰가: 시장 데이터 단독 ──
+        target_mileage_val = target.get("mileage", 0) or 0
+        target_year_val = target.get("year", 0) or 0
+        auction_market = estimate_auction_by_market(
+            maker=target.get("maker", ""),
+            model=target.get("model", ""),
+            trim=target.get("trim", ""),
+            year=target_year_val,
+            mileage=target_mileage_val,
+            factory_price=target.get("factory_price", 0) or 0,
+            base_price=target.get("base_price", 0) or 0,
+        )
+        if auction_market.success:
+            estimated_auction = auction_market.estimated_auction
 
         # total_adjustment: 금액 기준 (기준낙찰가 대비 차이)
         total_adjustment = round(estimated_auction - ref_auction, 1)
 
+        # ── 소매가 추정: 시장 데이터 기반 ──
+        retail_result = estimate_retail_by_market(
+            maker=target.get("maker", ""),
+            model=target.get("model", ""),
+            trim=target.get("trim", ""),
+            year=target_year_val,
+            mileage=target_mileage_val,
+            factory_price=target.get("factory_price", 0) or 0,
+            base_price=target.get("base_price", 0) or 0,
+        )
+
+        estimated_retail = retail_result.estimated_retail if retail_result.success else 0
+        adjustments.append({
+            "rule_name": "소매가 추정 (비율 추이)",
+            "rule_id": "retail_estimation",
+            "description": (
+                f"같은 트림·연식 소매 {retail_result.vehicles_found}건 분석 → "
+                f"비율 {retail_result.estimated_ratio:.1f}% × {tgt_label} {tgt_price:,.0f}만 = "
+                f"추정 소매가 {estimated_retail:,.0f}만원"
+                if retail_result.success
+                else f"소매가 추정 불가: {retail_result.details}"
+            ),
+            "amount": 0,
+            "details": retail_result.details,
+            "data_source": (
+                f"시장 데이터 비율 추이 ({retail_result.vehicles_found}건)"
+                if retail_result.success else "데이터 부족"
+            ),
+        })
+
         # 신뢰도
-        confidence = "높음" if abs(total_adj_pct) < 5 else "보통"
+        auction_confidence = "높음" if abs(total_adj_pct) < 5 else "보통"
+        if retail_result.success:
+            confidence = retail_result.confidence
+            if auction_confidence == "보통":
+                confidence = "보통"
+        else:
+            confidence = auction_confidence
 
         summary = (
             f"기준비율 {base_ratio_pct:.1f}%"
@@ -312,7 +331,8 @@ def calculate_with_criteria(
             f" → 조정비율 {adjusted_ratio_pct:.1f}%"
             f" × 대상{tgt_label} {tgt_price:,.0f}만"
             f" = 예상 낙찰가 {estimated_auction:,.0f}만원"
-            f" (소매가 {estimated_retail:,.0f}만원)"
+            + (f" | 소매가 {estimated_retail:,.0f}만원 (비율 {retail_result.estimated_ratio:.1f}%)"
+               if retail_result.success else " | 소매가 추정 불가")
         )
 
     else:
@@ -360,47 +380,63 @@ def calculate_with_criteria(
             "data_source": f"LLM 분석 기준: 연당 {year_rate:.1f}% (절대금액 방식)",
         })
 
-        # ── 3. 검차 보정 (폴백 — 연식/주행거리 가중) ──
-        inspect_adj_pct, inspect_details = _calc_inspection_adj(
-            reference, target_year=target_year, target_mileage=target_mileage,
-        )
-        inspect_amount = round(inspect_adj_pct / 100 * ref_auction, 1) if inspect_adj_pct > 0 else 0
-        adjustments.append({
-            "rule_name": "검차 보정",
-            "rule_id": "inspection",
-            "description": (
-                f"기준차 사고이력 → 대상 AA 기준 +{inspect_adj_pct:.1f}%p"
-                if inspect_adj_pct > 0
-                else "기준차량도 무사고 — 검차 보정 없음"
-            ),
-            "amount": inspect_amount,
-            "details": (
-                ("\n".join(inspect_details) + f"\n(출고가/기본가 부재 — 낙찰가 기준 절대금액 방식)")
-                if inspect_adj_pct > 0
-                else "대상: AA (무사고), 기준: 사고이력 없음\n(출고가/기본가 부재 — 낙찰가 기준 절대금액 방식)"
-            ),
-            "data_source": "업계 기준: 교환 2%p/부위, 판금 1%p/부위, 골격 15~20%p",
-        })
-
         total_adjustment = sum(a["amount"] for a in adjustments)
         estimated_auction = round(ref_auction + total_adjustment, 1)
 
-        segment = target.get("segment", "") or ""
-        is_import = "수입" in segment
-        discount = 0.88 if is_import else 0.90
-        estimated_retail = round(estimated_auction / discount, 1)
+        # ── 낙찰가: 시장 데이터 단독 ──
+        target_mileage_val = target.get("mileage", 0) or 0
+        target_year_val = target.get("year", 0) or 0
+        auction_market = estimate_auction_by_market(
+            maker=target.get("maker", ""),
+            model=target.get("model", ""),
+            trim=target.get("trim", ""),
+            year=target_year_val,
+            mileage=target_mileage_val,
+            factory_price=target.get("factory_price", 0) or 0,
+            base_price=target.get("base_price", 0) or 0,
+        )
+        if auction_market.success:
+            estimated_auction = auction_market.estimated_auction
+        total_adjustment = round(estimated_auction - ref_auction, 1)
 
-        min_margin = 150
-        if estimated_retail - estimated_auction < min_margin:
-            estimated_retail = round(estimated_auction + min_margin, 1)
+        # ── 소매가 추정: 시장 데이터 기반 ──
+        retail_result = estimate_retail_by_market(
+            maker=target.get("maker", ""),
+            model=target.get("model", ""),
+            trim=target.get("trim", ""),
+            year=target_year_val,
+            mileage=target_mileage_val,
+            factory_price=target.get("factory_price", 0) or 0,
+            base_price=target.get("base_price", 0) or 0,
+        )
 
-        confidence = "보통"
+        estimated_retail = retail_result.estimated_retail if retail_result.success else 0
+        adjustments.append({
+            "rule_name": "소매가 추정 (비율 추이)",
+            "rule_id": "retail_estimation",
+            "description": (
+                f"같은 트림·연식 소매 {retail_result.vehicles_found}건 분석 → "
+                f"비율 {retail_result.estimated_ratio:.1f}% = "
+                f"추정 소매가 {estimated_retail:,.0f}만원"
+                if retail_result.success
+                else f"소매가 추정 불가: {retail_result.details}"
+            ),
+            "amount": 0,
+            "details": retail_result.details,
+            "data_source": (
+                f"시장 데이터 비율 추이 ({retail_result.vehicles_found}건)"
+                if retail_result.success else "데이터 부족"
+            ),
+        })
+
+        confidence = retail_result.confidence if retail_result.success else "보통"
         summary = (
             f"기준가 {ref_auction:,.0f}만원"
             f" → 보정 {total_adjustment:+,.0f}만원"
             f" → 예상 낙찰가 {estimated_auction:,.0f}만원"
-            f" (소매가 {estimated_retail:,.0f}만원)"
-            f" [출고가/기본가 부재 — 절대금액 방식]"
+            + (f" | 소매가 {estimated_retail:,.0f}만원 (비율 {retail_result.estimated_ratio:.1f}%)"
+               if retail_result.success else " | 소매가 추정 불가")
+            + f" [출고가/기본가 부재 — 절대금액 방식]"
         )
 
     return {

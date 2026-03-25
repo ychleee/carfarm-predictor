@@ -502,6 +502,7 @@ def search_auction_db(
     mileage_max: int | None = None,
     usage: str | None = None,
     domestic_only: bool = True,
+    export_only: bool = False,
     limit: int = 500,
     sort_by: str = "날짜",
     company_id: str | None = None,
@@ -605,10 +606,13 @@ def search_auction_db(
             if mapped != usage:
                 continue
 
-        # 내수 전용
+        # 내수/수출 필터
+        dest = data.get("saleDestination") or ""
         if domestic_only:
-            dest = data.get("saleDestination") or ""
             if "수출" in dest:
+                continue
+        if export_only:
+            if "수출" not in dest:
                 continue
 
         results.append(_to_legacy_dict(doc.id, data))

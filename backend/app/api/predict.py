@@ -28,14 +28,6 @@ class PriceFactorResponse(BaseModel):
     description: str
 
 
-class StatsResponse(BaseModel):
-    count: int = 0
-    mean: float = 0
-    median: float = 0
-    min: float = 0
-    max: float = 0
-
-
 class PredictPriceResponse(BaseModel):
     estimated_auction: float
     estimated_auction_export: float = 0
@@ -47,13 +39,9 @@ class PredictPriceResponse(BaseModel):
     auction_reasoning: str = ""
     retail_reasoning: str = ""
     export_reasoning: str = ""
-    auction_factors: list[PriceFactorResponse] = []
-    retail_factors: list[PriceFactorResponse] = []
     comparable_summary: str = ""
     key_comparables: list[str] = []
     vehicles_analyzed: int = 0
-    auction_stats: StatsResponse = StatsResponse()
-    retail_stats: StatsResponse = StatsResponse()
 
 
 @router.post("/predict-price", response_model=PredictPriceResponse)
@@ -76,6 +64,8 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             "exchange_count": target.exchange_count,
             "bodywork_count": target.bodywork_count,
             "generation": target.generation,
+            "factory_price": target.factory_price,
+            "base_price": target.base_price,
             "part_damages": [
                 {"part": pd.part, "damage_type": pd.damage_type}
                 for pd in target.part_damages
@@ -94,10 +84,6 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             result.output_tokens,
         )
 
-        # stats dict → StatsResponse 변환 (NaN-safe)
-        def _to_stats(d: dict) -> StatsResponse:
-            return StatsResponse(**_safe_stats(d))
-
         return PredictPriceResponse(
             estimated_auction=result.estimated_auction,
             estimated_auction_export=result.estimated_auction_export,
@@ -111,17 +97,9 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             auction_reasoning=result.auction_reasoning,
             retail_reasoning=result.retail_reasoning,
             export_reasoning=result.export_reasoning,
-            auction_factors=[
-                PriceFactorResponse(**f) for f in result.auction_factors
-            ],
-            retail_factors=[
-                PriceFactorResponse(**f) for f in result.retail_factors
-            ],
             comparable_summary=result.comparable_summary,
             key_comparables=result.key_comparables,
             vehicles_analyzed=result.vehicles_analyzed,
-            auction_stats=_to_stats(result.auction_stats),
-            retail_stats=_to_stats(result.retail_stats),
         )
 
     except Exception as e:
@@ -178,16 +156,6 @@ def _safe_float(val, default=0) -> float:
         return default
 
 
-def _safe_stats(stats: dict) -> dict:
-    """stats dict의 숫자 값을 NaN-safe하게 변환"""
-    return {
-        "count": int(_safe_float(stats.get("count", 0))),
-        "mean": _safe_float(stats.get("mean", 0)),
-        "median": _safe_float(stats.get("median", 0)),
-        "min": _safe_float(stats.get("min", 0)),
-        "max": _safe_float(stats.get("max", 0)),
-    }
-
 
 def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
     """백그라운드에서 예측 실행 후 Firestore 업데이트 (동기 함수)."""
@@ -204,6 +172,8 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "exchange_count": target.exchange_count,
             "bodywork_count": target.bodywork_count,
             "generation": target.generation,
+            "factory_price": target.factory_price,
+            "base_price": target.base_price,
             "part_damages": [
                 {"part": pd.part, "damage_type": pd.damage_type}
                 for pd in target.part_damages
@@ -231,19 +201,9 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "auctionReasoning": result.auction_reasoning,
             "retailReasoning": result.retail_reasoning,
             "exportReasoning": result.export_reasoning,
-            "auctionFactors": [
-                {"factor": f["factor"], "impact": f["impact"], "description": f["description"]}
-                for f in result.auction_factors
-            ],
-            "retailFactors": [
-                {"factor": f["factor"], "impact": f["impact"], "description": f["description"]}
-                for f in result.retail_factors
-            ],
             "comparableSummary": result.comparable_summary,
             "keyComparables": result.key_comparables,
             "vehiclesAnalyzed": result.vehicles_analyzed,
-            "auctionStats": _safe_stats(result.auction_stats),
-            "retailStats": _safe_stats(result.retail_stats),
             "updatedAt": SERVER_TIMESTAMP,
             "error": None,
         })
