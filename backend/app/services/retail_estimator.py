@@ -400,8 +400,8 @@ def _build_brackets(
             r_median = statistics.median(use_ratios)
             if len(b.ratios) > 1:
                 b.ratio_cv = statistics.stdev(b.ratios) / statistics.mean(b.ratios) if statistics.mean(b.ratios) > 0 else 0
-            # CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
-            if b.ratio_cv > 0.12:
+            # 가격 또는 비율 CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
+            if max(b.price_cv, b.ratio_cv) > 0.12:
                 b.median_ratio = _lower_half_mean(use_ratios)
             else:
                 b.median_ratio = min(r_mean, r_median)
@@ -968,8 +968,8 @@ def _build_auction_brackets(
             r_median = statistics.median(use_ratios)
             if len(b.ratios) > 1:
                 b.ratio_cv = statistics.stdev(b.ratios) / statistics.mean(b.ratios) if statistics.mean(b.ratios) > 0 else 0
-            # CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
-            if b.ratio_cv > 0.12:
+            # 가격 또는 비율 CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
+            if max(b.price_cv, b.ratio_cv) > 0.12:
                 b.median_ratio = _lower_half_mean(use_ratios)
             else:
                 b.median_ratio = min(r_mean, r_median)
