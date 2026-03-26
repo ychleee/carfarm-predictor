@@ -68,8 +68,8 @@ RATIO_CV_THRESHOLD = 0.15     # 비율 CV > 15% → 비율 변동 큼
 PRICE_CV_THRESHOLD = 0.10     # 소매가 CV < 10% → 소매가 안정적
 MIN_VEHICLES_PER_BRACKET = 2  # 구간당 최소 차량 수
 MIN_TOTAL_VEHICLES = 3        # 전체 최소 차량 수 (이 이하면 추정 불가)
-MIN_VEHICLES_DESIRED = 20     # 소매 목표 차량 수 (미달 시 연식 확대)
-MIN_AUCTION_VEHICLES_DESIRED = 50  # 낙찰 목표 차량 수 (미달 시 연식 확대)
+MIN_VEHICLES_DESIRED = 6      # 소매 목표 차량 수 (이하이면 연식 확대)
+MIN_AUCTION_VEHICLES_DESIRED = 6   # 낙찰 목표 차량 수 (이하이면 연식 확대)
 
 
 # =========================================================================
@@ -289,6 +289,15 @@ def _is_clean_vehicle(v: dict) -> bool:
     return True
 
 
+def _lower_half_mean(values: list[float]) -> float:
+    """하위 50% 평균 — 고가 이상치 영향 자연 차단."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    half = max(len(s) // 2, 1)  # 최소 1건
+    return statistics.mean(s[:half])
+
+
 def _filter_outliers(values: list[float]) -> list[float]:
     """IQR 기반 이상치 제거. 3건 미만이면 그대로 반환."""
     if len(values) < 3:
@@ -367,28 +376,37 @@ def _build_brackets(
         b.count = len(b.prices)
         key = b.bracket_start
 
-        # 가격 이상치 필터링
+        # 가격 이상치 필터링 → CV 기반 조건부 적용
         filtered_prices = _filter_outliers(b.prices) if b.prices else []
         if filtered_prices:
             mean_price = statistics.mean(filtered_prices)
-            b.median_price = min(mean_price, statistics.median(filtered_prices))
+            med_price = statistics.median(filtered_prices)
             if len(filtered_prices) > 1:
                 b.price_cv = statistics.stdev(filtered_prices) / mean_price if mean_price > 0 else 0
+            # CV > 12%: 하위 50% 평균 (이상치 차단), 아니면 min(mean, median)
+            if b.price_cv > 0.12:
+                b.median_price = _lower_half_mean(filtered_prices)
+            else:
+                b.median_price = min(mean_price, med_price)
 
-        # 비율 이상치 필터링
+        # 비율 이상치 필터링 → CV 기반 조건부 적용
         b.ratios = _filter_outliers(b.ratios) if b.ratios else []
         clean_raw = clean_ratios_map.get(key, [])
         clean = _filter_outliers(clean_raw) if clean_raw else []
 
         use_ratios = clean if clean else b.ratios
         if use_ratios:
-            mr_mean = statistics.mean(use_ratios)
-            mr_median = statistics.median(use_ratios)
-            b.median_ratio = min(mr_mean, mr_median)  # 보수적
+            r_mean = statistics.mean(use_ratios)
+            r_median = statistics.median(use_ratios)
             if len(b.ratios) > 1:
                 b.ratio_cv = statistics.stdev(b.ratios) / statistics.mean(b.ratios) if statistics.mean(b.ratios) > 0 else 0
+            # CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
+            if b.ratio_cv > 0.12:
+                b.median_ratio = _lower_half_mean(use_ratios)
+            else:
+                b.median_ratio = min(r_mean, r_median)
 
-        # effective_ratio: 정상차량 min(mean, median)
+        # effective_ratio
         if use_ratios:
             b.effective_ratio = b.median_ratio
         elif tgt_ref_price > 0 and b.median_price > 0:
@@ -416,20 +434,22 @@ def _interpolate_ratio(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 존재 → 추세선과 비교하여 보수적(min) 적용
+    # 1) 정확한 구간 존재 → 추세선과 평균하여 안정화
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
-        ratio = exact.effective_ratio
-        # 추세선 값과 비교하여 보수적(낮은 값) 적용
+        # 인접 구간 이동평균으로 평활화
+        ratio = _moving_avg(target_key, usable, lambda b: b.effective_ratio)
+        if ratio <= 0:
+            ratio = exact.effective_ratio
+        # 건수 가중 추세선 80% 가중 평균
         if len(usable) >= 2:
             xs = [(b.bracket_start + 5000) / 10000 for b in usable]
             ys = [b.effective_ratio for b in usable]
-            slope = _calc_slope(xs, ys)
-            y_mean = sum(ys) / len(ys)
-            x_mean = sum(xs) / len(xs)
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
             trend_ratio = y_mean + slope * (target_mid / 10000 - x_mean)
             if trend_ratio > 0:
-                ratio = min(ratio, trend_ratio)
+                ratio = ratio * 0.2 + trend_ratio * 0.8
         return ratio, "ratio_direct"
 
     # 2) lower/upper 구간 분리 (중심점 기준)
@@ -446,20 +466,22 @@ def _interpolate_ratio(
         ratio = lb.effective_ratio + t * (ub.effective_ratio - lb.effective_ratio)
         return ratio, "ratio_interpolation"
 
-    # 4) 한쪽만 존재 → 추세 기반 외삽
+    # 4) 한쪽만 존재 → 건수 가중 추세선에서 감쇠 외삽
     if len(usable) >= 2:
-        # 2개 이상 구간으로 추세(기울기) 계산
-        # x = 구간 중심 (만km), y = effective_ratio
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.effective_ratio for b in usable]
-        slope = _calc_slope(xs, ys)
+        ws = [max(b.count, 1) for b in usable]
+        slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
 
-        # 가장 가까운 구간에서 추세 적용
         nearest = lower[-1] if lower else upper[0]
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
-        ratio = nearest.effective_ratio + slope * (target_mid_10k - nearest_mid_10k)
-        # 비율이 음수가 되지 않도록 하한 적용
+        # 추세선 값에서 시작 (원값 대신)
+        trend_at_nearest = y_mean + slope * (nearest_mid_10k - x_mean)
+        if trend_at_nearest <= 0:
+            trend_at_nearest = nearest.effective_ratio
+        distance = target_mid_10k - nearest_mid_10k
+        ratio = _dampened_extrapolation(trend_at_nearest, slope, distance)
         ratio = max(ratio, 0.05)
         return ratio, "ratio_trend_extrapolation"
 
@@ -485,20 +507,22 @@ def _interpolate_price(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 → 추세선과 비교하여 보수적(min) 적용
+    # 1) 정확한 구간 → 추세선과 평균하여 안정화
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
-        price = exact.median_price
-        # 추세선 값과 비교하여 보수적(낮은 값) 적용
+        # 인접 구간 이동평균으로 평활화
+        price = _moving_avg(target_key, usable, lambda b: b.median_price)
+        if price <= 0:
+            price = exact.median_price
+        # 건수 가중 추세선 80% 가중 평균
         if len(usable) >= 2:
             xs = [(b.bracket_start + 5000) / 10000 for b in usable]
             ys = [b.median_price for b in usable]
-            slope = _calc_slope(xs, ys)
-            y_mean = sum(ys) / len(ys)
-            x_mean = sum(xs) / len(xs)
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
             trend_price = y_mean + slope * (target_mid / 10000 - x_mean)
             if trend_price > 0:
-                price = min(price, trend_price)
+                price = price * 0.2 + trend_price * 0.8
         return price, "price_direct"
 
     # 2) lower/upper 분리
@@ -514,19 +538,87 @@ def _interpolate_price(
         price = lb.median_price + t * (ub.median_price - lb.median_price)
         return max(price, 0), "price_interpolation"
 
-    # 4) 한쪽만 → 추세 외삽
+    # 4) 한쪽만 → 건수 가중 추세선에서 감쇠 외삽
     if len(usable) >= 2:
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.median_price for b in usable]
-        slope = _calc_slope(xs, ys)
+        ws = [max(b.count, 1) for b in usable]
+        slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
         nearest = lower[-1] if lower else upper[0]
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
-        price = nearest.median_price + slope * (target_mid_10k - nearest_mid_10k)
+        trend_at_nearest = y_mean + slope * (nearest_mid_10k - x_mean)
+        if trend_at_nearest <= 0:
+            trend_at_nearest = nearest.median_price
+        distance = target_mid_10k - nearest_mid_10k
+        price = _dampened_extrapolation(trend_at_nearest, slope, distance)
         return max(price, 0), "price_trend_extrapolation"
 
     # 5) 1개 구간
     return usable[0].median_price, "price_nearest"
+
+
+def _moving_avg(
+    target_key: int,
+    usable: list[MileageBracket],
+    value_fn,
+) -> float:
+    """
+    인접 구간 가중 이동평균.
+
+    양쪽 인접 구간 존재: prev×0.25 + current×0.5 + next×0.25
+    한쪽만 존재:         neighbor×0.3 + current×0.7
+    인접 없음:           current 그대로
+    """
+    exact = next((b for b in usable if b.bracket_start == target_key), None)
+    if not exact:
+        return 0.0
+
+    current_val = value_fn(exact)
+    if current_val <= 0:
+        return 0.0
+
+    # 인접 구간 찾기 (10,000km 단위)
+    exact_idx = next(i for i, b in enumerate(usable) if b.bracket_start == target_key)
+    prev_val = value_fn(usable[exact_idx - 1]) if exact_idx > 0 else 0.0
+    next_val = value_fn(usable[exact_idx + 1]) if exact_idx < len(usable) - 1 else 0.0
+
+    has_prev = prev_val > 0
+    has_next = next_val > 0
+
+    if has_prev and has_next:
+        return prev_val * 0.25 + current_val * 0.5 + next_val * 0.25
+    elif has_prev:
+        return prev_val * 0.3 + current_val * 0.7
+    elif has_next:
+        return next_val * 0.3 + current_val * 0.7
+    return current_val
+
+
+def _dampened_extrapolation(base_value: float, slope: float, distance: float) -> float:
+    """
+    지수 감쇠 외삽: 데이터 범위를 벗어나는 구간마다 기울기를 절반씩 감쇠.
+
+    base_value: 가장 가까운 구간의 값 (비율 또는 가격)
+    slope: 만km당 기울기
+    distance: 외삽 거리 (만km 단위, 양수)
+    """
+    if abs(distance) < 0.01:
+        return base_value
+
+    # 1만km 단위로 감쇠 적용 (매 구간 기울기 × 0.5)
+    decay = 0.5
+    result = base_value
+    remaining = abs(distance)
+    current_slope = slope
+
+    while remaining > 0:
+        step = min(remaining, 1.0)  # 1만km씩 적용
+        result += current_slope * step * (1 if distance > 0 else -1)
+        remaining -= step
+        current_slope *= decay  # 다음 구간은 기울기 절반
+
+    return result
 
 
 def _calc_slope(xs: list[float], ys: list[float]) -> float:
@@ -541,6 +633,29 @@ def _calc_slope(xs: list[float], ys: list[float]) -> float:
     if denominator == 0:
         return 0
     return numerator / denominator
+
+
+def _calc_weighted_slope(
+    xs: list[float], ys: list[float], weights: list[float],
+) -> tuple[float, float, float]:
+    """
+    건수 가중 선형회귀.
+
+    Returns: (slope, x_mean_w, y_mean_w) — 가중 평균 x, y도 함께 반환.
+    """
+    n = len(xs)
+    if n < 2:
+        return 0, 0, 0
+    w_sum = sum(weights)
+    if w_sum == 0:
+        return 0, 0, 0
+    x_mean = sum(w * x for w, x in zip(weights, xs)) / w_sum
+    y_mean = sum(w * y for w, y in zip(weights, ys)) / w_sum
+    numerator = sum(w * (x - x_mean) * (y - y_mean) for w, x, y in zip(weights, xs, ys))
+    denominator = sum(w * (x - x_mean) ** 2 for w, x in zip(weights, xs))
+    if denominator == 0:
+        return 0, x_mean, y_mean
+    return numerator / denominator, x_mean, y_mean
 
 
 
@@ -713,8 +828,8 @@ def estimate_retail_by_market(
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                # 비율 추정값을 실제 소매가로 보정 (평균)
-                result.estimated_retail = round((ratio_est + price) / 2, 1)
+                # 비율 추정값과 소매가 보간값 가중 평균 (가격 60% 우선)
+                result.estimated_retail = round(ratio_est * 0.4 + price * 0.6, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_retail = round(ratio_est, 1)
@@ -829,28 +944,37 @@ def _build_auction_brackets(
         b.count = len(b.prices)
         key = b.bracket_start
 
-        # 가격 이상치 필터링
+        # 가격 이상치 필터링 → CV 기반 조건부 적용
         filtered_prices = _filter_outliers(b.prices) if b.prices else []
         if filtered_prices:
             mean_price = statistics.mean(filtered_prices)
-            b.median_price = min(mean_price, statistics.median(filtered_prices))
+            med_price = statistics.median(filtered_prices)
             if len(filtered_prices) > 1:
                 b.price_cv = statistics.stdev(filtered_prices) / mean_price if mean_price > 0 else 0
+            # CV > 12%: 하위 50% 평균 (이상치 차단), 아니면 min(mean, median)
+            if b.price_cv > 0.12:
+                b.median_price = _lower_half_mean(filtered_prices)
+            else:
+                b.median_price = min(mean_price, med_price)
 
-        # 비율 이상치 필터링
+        # 비율 이상치 필터링 → CV 기반 조건부 적용
         b.ratios = _filter_outliers(b.ratios) if b.ratios else []
         clean_raw = clean_ratios_map.get(key, [])
         clean = _filter_outliers(clean_raw) if clean_raw else []
 
         use_ratios = clean if clean else b.ratios
         if use_ratios:
-            mr_mean = statistics.mean(use_ratios)
-            mr_median = statistics.median(use_ratios)
-            b.median_ratio = min(mr_mean, mr_median)  # 보수적
+            r_mean = statistics.mean(use_ratios)
+            r_median = statistics.median(use_ratios)
             if len(b.ratios) > 1:
                 b.ratio_cv = statistics.stdev(b.ratios) / statistics.mean(b.ratios) if statistics.mean(b.ratios) > 0 else 0
+            # CV > 12%: 하위 50% 평균, 아니면 min(mean, median)
+            if b.ratio_cv > 0.12:
+                b.median_ratio = _lower_half_mean(use_ratios)
+            else:
+                b.median_ratio = min(r_mean, r_median)
 
-        # effective_ratio: 정상차량 min(mean, median)
+        # effective_ratio
         if use_ratios:
             b.effective_ratio = b.median_ratio
         elif tgt_ref_price > 0 and b.median_price > 0:
@@ -962,8 +1086,8 @@ def estimate_auction_by_market(
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                # 비율 추정값을 실제 낙찰가로 보정 (평균)
-                result.estimated_auction = round((ratio_est + price) / 2, 1)
+                # 비율 추정값과 낙찰가 보간값 가중 평균 (가격 60% 우선)
+                result.estimated_auction = round(ratio_est * 0.4 + price * 0.6, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_auction = round(ratio_est, 1)
@@ -1129,7 +1253,8 @@ def estimate_export_auction_by_market(
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                result.estimated_auction = round((ratio_est + price) / 2, 1)
+                # 비율 추정값과 수출 낙찰가 보간값 가중 평균 (가격 60% 우선)
+                result.estimated_auction = round(ratio_est * 0.4 + price * 0.6, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_auction = round(ratio_est, 1)
@@ -1198,7 +1323,7 @@ def _interpolate_auction_ratio(
     target_mileage: int,
     sorted_brackets: list[MileageBracket],
 ) -> tuple[float, str]:
-    """낙찰가 비율 보간 (보수적: 직접 구간도 추세선과 비교 min)."""
+    """낙찰가 비율 보간 (직접 구간은 추세선과 평균하여 안정화)."""
     usable = [b for b in sorted_brackets if b.effective_ratio > 0]
     if not usable:
         return 0, "no_data"
@@ -1206,19 +1331,20 @@ def _interpolate_auction_ratio(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 → 추세선과 비교하여 보수적(min) 적용
+    # 1) 정확한 구간 → 이동평균 + 건수 가중 추세선(80%)
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
-        ratio = exact.effective_ratio
+        ratio = _moving_avg(target_key, usable, lambda b: b.effective_ratio)
+        if ratio <= 0:
+            ratio = exact.effective_ratio
         if len(usable) >= 2:
             xs = [(b.bracket_start + 5000) / 10000 for b in usable]
             ys = [b.effective_ratio for b in usable]
-            slope = _calc_slope(xs, ys)
-            y_mean = sum(ys) / len(ys)
-            x_mean = sum(xs) / len(xs)
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
             trend_ratio = y_mean + slope * (target_mid / 10000 - x_mean)
             if trend_ratio > 0:
-                ratio = min(ratio, trend_ratio)
+                ratio = ratio * 0.2 + trend_ratio * 0.8
         return ratio, "ratio_direct"
 
     # 2) lower/upper
@@ -1234,15 +1360,20 @@ def _interpolate_auction_ratio(
         ratio = lb.effective_ratio + t * (ub.effective_ratio - lb.effective_ratio)
         return ratio, "ratio_interpolation"
 
-    # 4) 추세 외삽
+    # 4) 건수 가중 추세선에서 감쇠 외삽
     if len(usable) >= 2:
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.effective_ratio for b in usable]
-        slope = _calc_slope(xs, ys)
+        ws = [max(b.count, 1) for b in usable]
+        slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
         nearest = lower[-1] if lower else upper[0]
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
-        ratio = nearest.effective_ratio + slope * (target_mid_10k - nearest_mid_10k)
+        trend_at_nearest = y_mean + slope * (nearest_mid_10k - x_mean)
+        if trend_at_nearest <= 0:
+            trend_at_nearest = nearest.effective_ratio
+        distance = target_mid_10k - nearest_mid_10k
+        ratio = _dampened_extrapolation(trend_at_nearest, slope, distance)
         return max(ratio, 0.05), "ratio_trend_extrapolation"
 
     # 5) 1개 구간
@@ -1253,7 +1384,7 @@ def _interpolate_auction_price(
     target_mileage: int,
     sorted_brackets: list[MileageBracket],
 ) -> tuple[float, str]:
-    """낙찰가 직접 보간 (출고가 없을 때, 보수적: 추세선 비교 min)."""
+    """낙찰가 직접 보간 (출고가 없을 때, 추세선과 평균하여 안정화)."""
     # 가격 보간: 1건이라도 실제 시장 데이터이므로 모든 구간 사용
     usable = [b for b in sorted_brackets if b.median_price > 0]
     if not usable:
@@ -1264,16 +1395,17 @@ def _interpolate_auction_price(
 
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
-        price = exact.median_price
+        price = _moving_avg(target_key, usable, lambda b: b.median_price)
+        if price <= 0:
+            price = exact.median_price
         if len(usable) >= 2:
             xs = [(b.bracket_start + 5000) / 10000 for b in usable]
             ys = [b.median_price for b in usable]
-            slope = _calc_slope(xs, ys)
-            y_mean = sum(ys) / len(ys)
-            x_mean = sum(xs) / len(xs)
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
             trend_price = y_mean + slope * (target_mid / 10000 - x_mean)
             if trend_price > 0:
-                price = min(price, trend_price)
+                price = price * 0.2 + trend_price * 0.8
         return price, "price_direct"
 
     lower = [b for b in usable if (b.bracket_start + 5000) <= target_mid]
@@ -1290,11 +1422,16 @@ def _interpolate_auction_price(
     if len(usable) >= 2:
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.median_price for b in usable]
-        slope = _calc_slope(xs, ys)
+        ws = [max(b.count, 1) for b in usable]
+        slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
         nearest = lower[-1] if lower else upper[0]
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
-        price = nearest.median_price + slope * (target_mid_10k - nearest_mid_10k)
+        trend_at_nearest = y_mean + slope * (nearest_mid_10k - x_mean)
+        if trend_at_nearest <= 0:
+            trend_at_nearest = nearest.median_price
+        distance = target_mid_10k - nearest_mid_10k
+        price = _dampened_extrapolation(trend_at_nearest, slope, distance)
         return max(price, 0), "price_trend_extrapolation"
 
     return usable[0].median_price, "price_nearest"
