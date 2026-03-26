@@ -192,6 +192,9 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
         # Firestore에 결과 저장
         doc_ref.update({
             "status": "done",
+            "color": target.color or "",
+            "factoryPrice": _safe_float(target.factory_price),
+            "basePrice": _safe_float(target.base_price),
             "estimatedRetail": result.estimated_retail,
             "estimatedAuction": result.estimated_auction,
             "estimatedAuctionExport": result.estimated_auction_export,
