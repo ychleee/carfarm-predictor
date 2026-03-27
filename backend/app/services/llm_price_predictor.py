@@ -57,6 +57,8 @@ class PricePrediction:
     vehicles_analyzed: int = 0
     auction_stats: dict = field(default_factory=dict)
     retail_stats: dict = field(default_factory=dict)
+    comparable_auction_vehicles: list[dict] = field(default_factory=list)
+    comparable_retail_vehicles: list[dict] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
 
@@ -699,6 +701,57 @@ def _parse_prediction(text: str) -> dict:
     return json.loads(text)
 
 
+def _compact_auction_vehicle(v: dict) -> dict:
+    """낙찰 유사차량 → compact dict (Firestore 용량 절약)"""
+    sale_date = v.get("개최일", "")
+    if sale_date and len(str(sale_date)) > 7:
+        sale_date = str(sale_date)[:7]
+    return {
+        "id": v.get("auction_id", ""),
+        "nm": v.get("차명", "") or v.get("vehicle_name", ""),
+        "yr": v.get("연식", 0) or 0,
+        "ml": v.get("주행거리", 0) or 0,
+        "pr": round(_to_man_won(v.get("낙찰가", 0))),
+        "dt": sale_date,
+        "cl": v.get("색상", ""),
+        "tr": v.get("trim", ""),
+        "fl": v.get("연료", ""),
+        "fp": round(_to_man_won(v.get("factory_price", 0))) if v.get("factory_price") else 0,
+        "bp": round(_to_man_won(v.get("base_price", 0))) if v.get("base_price") else 0,
+        "ex": 1 if v.get("is_export") else 0,
+        "fe": v.get("frame_exchange", 0) or 0,
+        "fb": v.get("frame_bodywork", 0) or 0,
+        "ee": v.get("exterior_exchange", 0) or 0,
+        "eb": v.get("exterior_bodywork", 0) or 0,
+    }
+
+
+def _compact_retail_vehicle(v: dict) -> dict:
+    """소매 유사차량 → compact dict (엔카진단/사고이력 포함)"""
+    listing_date = v.get("매물등록일", "") or v.get("listing_date", "")
+    if listing_date and len(str(listing_date)) > 7:
+        listing_date = str(listing_date)[:7]
+    return {
+        "id": v.get("auction_id", ""),
+        "nm": v.get("차명", "") or v.get("vehicle_name", ""),
+        "yr": v.get("연식", 0) or 0,
+        "ml": v.get("주행거리", 0) or 0,
+        "pr": round(v.get("소매가", 0) or 0),
+        "dt": listing_date,
+        "cl": v.get("색상", ""),
+        "tr": v.get("trim", ""),
+        "fl": v.get("연료", ""),
+        "fp": round(_to_man_won(v.get("factory_price", 0))) if v.get("factory_price") else 0,
+        "bp": round(_to_man_won(v.get("base_price", 0))) if v.get("base_price") else 0,
+        "fe": v.get("frame_exchange", 0) or 0,
+        "fb": v.get("frame_bodywork", 0) or 0,
+        "ee": v.get("exterior_exchange", 0) or 0,
+        "eb": v.get("exterior_bodywork", 0) or 0,
+        "dg": 1 if v.get("has_diagnosis") else 0,
+        "ac": v.get("accident_summary", ""),
+    }
+
+
 def predict_price(
     target: dict,
     model: str = "claude-sonnet-4-20250514",
@@ -887,6 +940,10 @@ def predict_price(
         retail_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
         export_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
 
+    # ── 유사차량 compact 직렬화 (Firestore 저장용) ──
+    compact_auction = [_compact_auction_vehicle(v) for v in auction_vehicles[:20]]
+    compact_retail = [_compact_retail_vehicle(v) for v in retail_vehicles[:15]]
+
     result = PricePrediction(
         estimated_auction=final_auction,
         estimated_auction_export=export_price,
@@ -898,13 +955,15 @@ def predict_price(
         auction_reasoning=auction_reasoning_final,
         retail_reasoning=retail_reasoning_final,
         export_reasoning=export_reasoning_final,
-        auction_factors=[],
-        retail_factors=[],
+        auction_factors=auction_factors,
+        retail_factors=retail_factors,
         comparable_summary=parsed.get("comparable_summary", ""),
         key_comparables=parsed.get("key_comparables", []),
         vehicles_analyzed=total_vehicles,
-        auction_stats={},
-        retail_stats={},
+        auction_stats=auction_stats,
+        retail_stats=retail_stats,
+        comparable_auction_vehicles=compact_auction,
+        comparable_retail_vehicles=compact_retail,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )

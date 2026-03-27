@@ -434,9 +434,13 @@ def _interpolate_ratio(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 존재 → 추세선과 평균하여 안정화
+    # 1) 정확한 구간 존재
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
+        total_vehicles = sum(b.count for b in usable)
+        # 희소 데이터: 구간 또는 차량 수 부족 → 정확 구간값 직접 사용
+        if len(usable) <= 3 or total_vehicles <= 6:
+            return exact.effective_ratio, "ratio_direct"
         # 인접 구간 이동평균으로 평활화
         ratio = _moving_avg(target_key, usable, lambda b: b.effective_ratio)
         if ratio <= 0:
@@ -456,14 +460,31 @@ def _interpolate_ratio(
     lower = [b for b in usable if (b.bracket_start + 5000) <= target_mid]
     upper = [b for b in usable if (b.bracket_start + 5000) > target_mid]
 
-    # 3) 양쪽 존재 → 선형 보간
+    # 3) 양쪽 존재 → 격차 크면 추세선, 아니면 역전 감지 + 건수 가중 보간
     if lower and upper:
         lb = lower[-1]
         ub = upper[0]
         lb_mid = lb.bracket_start + 5000
         ub_mid = ub.bracket_start + 5000
+        gap = ub_mid - lb_mid
+        # 구간 간 격차 > 20,000km → 전체 추세선 사용
+        if gap > 20000 and len(usable) >= 2:
+            xs = [(b.bracket_start + 5000) / 10000 for b in usable]
+            ys = [b.effective_ratio for b in usable]
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
+            ratio = y_mean + slope * (target_mid / 10000 - x_mean)
+            if ratio > 0:
+                return ratio, "ratio_trend_interpolation"
         t = (target_mid - lb_mid) / (ub_mid - lb_mid) if ub_mid != lb_mid else 0.5
-        ratio = lb.effective_ratio + t * (ub.effective_ratio - lb.effective_ratio)
+        if lb.effective_ratio < ub.effective_ratio and lb.count < ub.count:
+            ratio = ub.effective_ratio
+        elif ub.effective_ratio > lb.effective_ratio and ub.count < lb.count:
+            ratio = lb.effective_ratio
+        else:
+            lb_w = (1 - t) * max(lb.count, 1)
+            ub_w = t * max(ub.count, 1)
+            ratio = (lb.effective_ratio * lb_w + ub.effective_ratio * ub_w) / (lb_w + ub_w)
         return ratio, "ratio_interpolation"
 
     # 4) 한쪽만 존재 → 건수 가중 추세선에서 감쇠 외삽
@@ -507,9 +528,12 @@ def _interpolate_price(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 → 추세선과 평균하여 안정화
+    # 1) 정확한 구간
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
+        total_vehicles = sum(b.count for b in usable)
+        if len(usable) <= 3 or total_vehicles <= 6:
+            return exact.median_price, "price_direct"
         # 인접 구간 이동평균으로 평활화
         price = _moving_avg(target_key, usable, lambda b: b.median_price)
         if price <= 0:
@@ -529,13 +553,30 @@ def _interpolate_price(
     lower = [b for b in usable if (b.bracket_start + 5000) <= target_mid]
     upper = [b for b in usable if (b.bracket_start + 5000) > target_mid]
 
-    # 3) 양쪽 → 선형 보간
+    # 3) 양쪽 → 격차 크면 추세선, 아니면 역전 감지 + 건수 가중 보간
     if lower and upper:
-        lb, ub = lower[-1], upper[0]
+        lb = lower[-1]
+        ub = upper[0]
         lb_mid = lb.bracket_start + 5000
         ub_mid = ub.bracket_start + 5000
+        gap = ub_mid - lb_mid
+        if gap > 20000 and len(usable) >= 2:
+            xs = [(b.bracket_start + 5000) / 10000 for b in usable]
+            ys = [b.median_price for b in usable]
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
+            price = y_mean + slope * (target_mid / 10000 - x_mean)
+            if price > 0:
+                return price, "price_trend_interpolation"
         t = (target_mid - lb_mid) / (ub_mid - lb_mid) if ub_mid != lb_mid else 0.5
-        price = lb.median_price + t * (ub.median_price - lb.median_price)
+        if lb.median_price < ub.median_price and lb.count < ub.count:
+            price = ub.median_price
+        elif ub.median_price > lb.median_price and ub.count < lb.count:
+            price = lb.median_price
+        else:
+            lb_w = (1 - t) * max(lb.count, 1)
+            ub_w = t * max(ub.count, 1)
+            price = (lb.median_price * lb_w + ub.median_price * ub_w) / (lb_w + ub_w)
         return max(price, 0), "price_interpolation"
 
     # 4) 한쪽만 → 건수 가중 추세선에서 감쇠 외삽
@@ -556,6 +597,48 @@ def _interpolate_price(
 
     # 5) 1개 구간
     return usable[0].median_price, "price_nearest"
+
+
+def _calc_cv_weights(
+    sorted_brackets: list[MileageBracket],
+) -> tuple[float, float]:
+    """
+    구간별 CV를 기반으로 비율/가격 가중치 결정.
+
+    비율 CV 높고 가격 CV 낮음 → 가격 중심 (0.2, 0.8)
+    가격 CV 높고 비율 CV 낮음 → 비율 중심 (0.8, 0.2)
+    비슷 → 기본 (0.4, 0.6)
+
+    Returns: (ratio_weight, price_weight)
+    """
+    # 건수 가중 평균 CV 계산
+    total_count = 0
+    sum_ratio_cv = 0.0
+    sum_price_cv = 0.0
+    for b in sorted_brackets:
+        c = max(b.count, 1)
+        sum_ratio_cv += b.ratio_cv * c
+        sum_price_cv += b.price_cv * c
+        total_count += c
+
+    if total_count == 0:
+        return 0.4, 0.6
+
+    avg_ratio_cv = sum_ratio_cv / total_count
+    avg_price_cv = sum_price_cv / total_count
+
+    # 안전 하한 (CV가 0이면 비교 불가)
+    if avg_ratio_cv < 0.01 and avg_price_cv < 0.01:
+        return 0.4, 0.6
+
+    if avg_ratio_cv > avg_price_cv * 1.5:
+        # 비율 변동 큼, 가격 안정 → 가격 중심
+        return 0.2, 0.8
+    elif avg_price_cv > avg_ratio_cv * 1.5:
+        # 가격 변동 큼, 비율 안정 → 비율 중심
+        return 0.8, 0.2
+    else:
+        return 0.4, 0.6
 
 
 def _moving_avg(
@@ -639,20 +722,46 @@ def _calc_weighted_slope(
     xs: list[float], ys: list[float], weights: list[float],
 ) -> tuple[float, float, float]:
     """
-    건수 가중 선형회귀.
+    건수 + 합의(consensus) 가중 선형회귀.
 
-    Returns: (slope, x_mean_w, y_mean_w) — 가중 평균 x, y도 함께 반환.
+    3개 이상 구간에서는 건수 가중 중앙값 대비 편차가 큰 구간의 가중치를 감소시켜
+    이상치 구간(예: 극저주행 신차급)이 추세선을 왜곡하는 것을 방지.
+
+    Returns: (slope, x_mean_w, y_mean_w)
     """
     n = len(xs)
     if n < 2:
         return 0, 0, 0
-    w_sum = sum(weights)
+
+    effective_weights = list(weights)
+
+    # 3개 이상 구간: 합의 가중치 적용
+    if n >= 3:
+        # 건수 가중 중앙값 산출
+        yw_sorted = sorted(zip(ys, weights), key=lambda x: x[0])
+        total_w = sum(w for _, w in yw_sorted)
+        cumul = 0
+        w_median = yw_sorted[0][0]
+        for val, w in yw_sorted:
+            cumul += w
+            if cumul >= total_w / 2:
+                w_median = val
+                break
+
+        if w_median > 0:
+            effective_weights = []
+            for y, w in zip(ys, weights):
+                dev = abs(y - w_median) / w_median
+                cw = max(0.1, 1 - dev * 3)
+                effective_weights.append(w * cw)
+
+    w_sum = sum(effective_weights)
     if w_sum == 0:
         return 0, 0, 0
-    x_mean = sum(w * x for w, x in zip(weights, xs)) / w_sum
-    y_mean = sum(w * y for w, y in zip(weights, ys)) / w_sum
-    numerator = sum(w * (x - x_mean) * (y - y_mean) for w, x, y in zip(weights, xs, ys))
-    denominator = sum(w * (x - x_mean) ** 2 for w, x in zip(weights, xs))
+    x_mean = sum(w * x for w, x in zip(effective_weights, xs)) / w_sum
+    y_mean = sum(w * y for w, y in zip(effective_weights, ys)) / w_sum
+    numerator = sum(w * (x - x_mean) * (y - y_mean) for w, x, y in zip(effective_weights, xs, ys))
+    denominator = sum(w * (x - x_mean) ** 2 for w, x in zip(effective_weights, xs))
     if denominator == 0:
         return 0, x_mean, y_mean
     return numerator / denominator, x_mean, y_mean
@@ -820,16 +929,16 @@ def estimate_retail_by_market(
         result.details = "유효 구간 생성 실패"
         return result
 
-    # 3단계: 추정 (비율 × 출고가 → 실제 소매가로 보정)
+    # 3단계: 추정 (비율 × 출고가 → 실제 소매가로 보정, CV 기반 동적 가중치)
     if tgt_ref_price > 0:
         ratio, ratio_method = _interpolate_ratio(mileage, sorted_brackets)
         price, price_method = _interpolate_price(mileage, sorted_brackets)
+        r_w, p_w = _calc_cv_weights(sorted_brackets)
 
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                # 비율 추정값과 소매가 보간값 가중 평균 (가격 60% 우선)
-                result.estimated_retail = round(ratio_est * 0.4 + price * 0.6, 1)
+                result.estimated_retail = round(ratio_est * r_w + price * p_w, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_retail = round(ratio_est, 1)
@@ -1078,16 +1187,16 @@ def estimate_auction_by_market(
         result.details = "유효 구간 생성 실패"
         return result
 
-    # 3단계: 추정 (비율 × 출고가 → 실제 낙찰가로 보정)
+    # 3단계: 추정 (비율 × 출고가 → 실제 낙찰가로 보정, CV 기반 동적 가중치)
     if tgt_ref_price > 0:
         ratio, ratio_method = _interpolate_auction_ratio(mileage, sorted_brackets)
         price, price_method = _interpolate_auction_price(mileage, sorted_brackets)
+        r_w, p_w = _calc_cv_weights(sorted_brackets)
 
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                # 비율 추정값과 낙찰가 보간값 가중 평균 (가격 60% 우선)
-                result.estimated_auction = round(ratio_est * 0.4 + price * 0.6, 1)
+                result.estimated_auction = round(ratio_est * r_w + price * p_w, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_auction = round(ratio_est, 1)
@@ -1245,16 +1354,16 @@ def estimate_export_auction_by_market(
         result.details = "유효 구간 생성 실패"
         return result
 
-    # 3단계: 추정
+    # 3단계: 추정 (CV 기반 동적 가중치)
     if tgt_ref_price > 0:
         ratio, ratio_method = _interpolate_auction_ratio(mileage, sorted_brackets)
         price, price_method = _interpolate_auction_price(mileage, sorted_brackets)
+        r_w, p_w = _calc_cv_weights(sorted_brackets)
 
         if ratio > 0:
             ratio_est = ratio * tgt_ref_price
             if price > 0:
-                # 비율 추정값과 수출 낙찰가 보간값 가중 평균 (가격 60% 우선)
-                result.estimated_auction = round(ratio_est * 0.4 + price * 0.6, 1)
+                result.estimated_auction = round(ratio_est * r_w + price * p_w, 1)
                 result.method = ratio_method + "+price_adj"
             else:
                 result.estimated_auction = round(ratio_est, 1)
@@ -1331,9 +1440,12 @@ def _interpolate_auction_ratio(
     target_key = _bracket_key(target_mileage)
     target_mid = target_key + 5000
 
-    # 1) 정확한 구간 → 이동평균 + 건수 가중 추세선(80%)
+    # 1) 정확한 구간
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
+        total_vehicles = sum(b.count for b in usable)
+        if len(usable) <= 3 or total_vehicles <= 6:
+            return exact.effective_ratio, "ratio_direct"
         ratio = _moving_avg(target_key, usable, lambda b: b.effective_ratio)
         if ratio <= 0:
             ratio = exact.effective_ratio
@@ -1351,13 +1463,30 @@ def _interpolate_auction_ratio(
     lower = [b for b in usable if (b.bracket_start + 5000) <= target_mid]
     upper = [b for b in usable if (b.bracket_start + 5000) > target_mid]
 
-    # 3) 선형 보간
+    # 3) 양쪽 → 격차 크면 추세선, 아니면 역전 감지 + 건수 가중 보간
     if lower and upper:
-        lb, ub = lower[-1], upper[0]
+        lb = lower[-1]
+        ub = upper[0]
         lb_mid = lb.bracket_start + 5000
         ub_mid = ub.bracket_start + 5000
+        gap = ub_mid - lb_mid
+        if gap > 20000 and len(usable) >= 2:
+            xs = [(b.bracket_start + 5000) / 10000 for b in usable]
+            ys = [b.effective_ratio for b in usable]
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
+            ratio = y_mean + slope * (target_mid / 10000 - x_mean)
+            if ratio > 0:
+                return ratio, "ratio_trend_interpolation"
         t = (target_mid - lb_mid) / (ub_mid - lb_mid) if ub_mid != lb_mid else 0.5
-        ratio = lb.effective_ratio + t * (ub.effective_ratio - lb.effective_ratio)
+        if lb.effective_ratio < ub.effective_ratio and lb.count < ub.count:
+            ratio = ub.effective_ratio
+        elif ub.effective_ratio > lb.effective_ratio and ub.count < lb.count:
+            ratio = lb.effective_ratio
+        else:
+            lb_w = (1 - t) * max(lb.count, 1)
+            ub_w = t * max(ub.count, 1)
+            ratio = (lb.effective_ratio * lb_w + ub.effective_ratio * ub_w) / (lb_w + ub_w)
         return ratio, "ratio_interpolation"
 
     # 4) 건수 가중 추세선에서 감쇠 외삽
@@ -1395,6 +1524,9 @@ def _interpolate_auction_price(
 
     exact = next((b for b in usable if b.bracket_start == target_key), None)
     if exact:
+        total_vehicles = sum(b.count for b in usable)
+        if len(usable) <= 3 or total_vehicles <= 6:
+            return exact.median_price, "price_direct"
         price = _moving_avg(target_key, usable, lambda b: b.median_price)
         if price <= 0:
             price = exact.median_price
@@ -1412,11 +1544,28 @@ def _interpolate_auction_price(
     upper = [b for b in usable if (b.bracket_start + 5000) > target_mid]
 
     if lower and upper:
-        lb, ub = lower[-1], upper[0]
+        lb = lower[-1]
+        ub = upper[0]
         lb_mid = lb.bracket_start + 5000
         ub_mid = ub.bracket_start + 5000
+        gap = ub_mid - lb_mid
+        if gap > 20000 and len(usable) >= 2:
+            xs = [(b.bracket_start + 5000) / 10000 for b in usable]
+            ys = [b.median_price for b in usable]
+            ws = [max(b.count, 1) for b in usable]
+            slope, x_mean, y_mean = _calc_weighted_slope(xs, ys, ws)
+            price = y_mean + slope * (target_mid / 10000 - x_mean)
+            if price > 0:
+                return price, "price_trend_interpolation"
         t = (target_mid - lb_mid) / (ub_mid - lb_mid) if ub_mid != lb_mid else 0.5
-        price = lb.median_price + t * (ub.median_price - lb.median_price)
+        if lb.median_price < ub.median_price and lb.count < ub.count:
+            price = ub.median_price
+        elif ub.median_price > lb.median_price and ub.count < lb.count:
+            price = lb.median_price
+        else:
+            lb_w = (1 - t) * max(lb.count, 1)
+            ub_w = t * max(ub.count, 1)
+            price = (lb.median_price * lb_w + ub.median_price * ub_w) / (lb_w + ub_w)
         return max(price, 0), "price_interpolation"
 
     if len(usable) >= 2:

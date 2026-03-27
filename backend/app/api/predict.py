@@ -28,6 +28,15 @@ class PriceFactorResponse(BaseModel):
     description: str
 
 
+class PriceStatsResponse(BaseModel):
+    count: int = 0
+    mean: float = 0
+    median: float = 0
+    min: float = 0
+    max: float = 0
+    std: float = 0
+
+
 class PredictPriceResponse(BaseModel):
     estimated_auction: float
     estimated_auction_export: float = 0
@@ -36,12 +45,18 @@ class PredictPriceResponse(BaseModel):
     confidence: str
     reasoning: str = ""
     factors: list[PriceFactorResponse] = []
+    auction_factors: list[PriceFactorResponse] = []
+    retail_factors: list[PriceFactorResponse] = []
     auction_reasoning: str = ""
     retail_reasoning: str = ""
     export_reasoning: str = ""
     comparable_summary: str = ""
     key_comparables: list[str] = []
     vehicles_analyzed: int = 0
+    auction_stats: PriceStatsResponse | None = None
+    retail_stats: PriceStatsResponse | None = None
+    comparable_auction_vehicles: list[dict] = []
+    comparable_retail_vehicles: list[dict] = []
 
 
 @router.post("/predict-price", response_model=PredictPriceResponse)
@@ -84,6 +99,18 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             result.output_tokens,
         )
 
+        def _to_stats(s) -> PriceStatsResponse | None:
+            if not s:
+                return None
+            return PriceStatsResponse(
+                count=s.get("count", 0),
+                mean=s.get("mean", 0),
+                median=s.get("median", 0),
+                min=s.get("min", 0),
+                max=s.get("max", 0),
+                std=s.get("std", 0),
+            )
+
         return PredictPriceResponse(
             estimated_auction=result.estimated_auction,
             estimated_auction_export=result.estimated_auction_export,
@@ -94,12 +121,22 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             factors=[
                 PriceFactorResponse(**f) for f in result.factors
             ],
+            auction_factors=[
+                PriceFactorResponse(**f) for f in result.auction_factors
+            ],
+            retail_factors=[
+                PriceFactorResponse(**f) for f in result.retail_factors
+            ],
             auction_reasoning=result.auction_reasoning,
             retail_reasoning=result.retail_reasoning,
             export_reasoning=result.export_reasoning,
             comparable_summary=result.comparable_summary,
             key_comparables=result.key_comparables,
             vehicles_analyzed=result.vehicles_analyzed,
+            auction_stats=_to_stats(result.auction_stats),
+            retail_stats=_to_stats(result.retail_stats),
+            comparable_auction_vehicles=result.comparable_auction_vehicles,
+            comparable_retail_vehicles=result.comparable_retail_vehicles,
         )
 
     except Exception as e:
@@ -204,9 +241,15 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "auctionReasoning": result.auction_reasoning,
             "retailReasoning": result.retail_reasoning,
             "exportReasoning": result.export_reasoning,
+            "auctionFactors": result.auction_factors,
+            "retailFactors": result.retail_factors,
             "comparableSummary": result.comparable_summary,
             "keyComparables": result.key_comparables,
             "vehiclesAnalyzed": result.vehicles_analyzed,
+            "auctionStats": result.auction_stats or None,
+            "retailStats": result.retail_stats or None,
+            "comparableAuctionVehicles": result.comparable_auction_vehicles,
+            "comparableRetailVehicles": result.comparable_retail_vehicles,
             "updatedAt": SERVER_TIMESTAMP,
             "error": None,
         })
