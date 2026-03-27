@@ -940,6 +940,20 @@ def predict_price(
         retail_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
         export_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
 
+    # ── 낙찰가 < 소매가 정합성 체크 ──
+    if final_auction > 0 and final_retail > 0 and final_auction >= final_retail * 0.97:
+        capped = round(final_retail * 0.90, 1)
+        logger.warning(
+            "낙찰가(%.0f) ≥ 소매가(%.0f)×0.97 — 소매가×0.90=%.0f으로 캡",
+            final_auction, final_retail, capped,
+        )
+        auction_reasoning_final += (
+            f"\n\n── 정합성 보정 ──\n"
+            f"낙찰가({final_auction:.0f}만) ≥ 소매가({final_retail:.0f}만)의 97%: "
+            f"소매가×90%={capped:.0f}만으로 캡"
+        )
+        final_auction = capped
+
     # ── 유사차량 compact 직렬화 (Firestore 저장용) ──
     compact_auction = [_compact_auction_vehicle(v) for v in auction_vehicles[:20]]
     compact_retail = [_compact_retail_vehicle(v) for v in retail_vehicles[:15]]
