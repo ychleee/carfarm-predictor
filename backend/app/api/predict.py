@@ -176,8 +176,9 @@ async def predict_price_async_endpoint(
         "error": None,
     })
 
-    # 동기 실행 (Cloud Run 요청 컨텍스트 내에서 CPU 보장)
-    _run_prediction_sync(target, vehicle_id, doc_ref)
+    # 스레드 풀에서 실행 — 이벤트 루프 블로킹 방지로 동시 다중 예측 가능
+    # Cloud Run 요청 컨텍스트 내이므로 CPU 스로틀링 없이 완료까지 보장
+    await asyncio.to_thread(_run_prediction_sync, target, vehicle_id, doc_ref)
 
     return {"status": "done"}
 
