@@ -923,22 +923,34 @@ def predict_price(
             f"{export_reasoning}"
         )
 
-    # ── 색상 보정 ──
-    color_adj, color_desc = _calc_color_adjustment(target, auction_vehicles)
-    if color_adj != 0:
-        if final_auction > 0:
-            final_auction = round(final_auction + color_adj, 1)
-        if final_retail > 0:
-            final_retail = round(final_retail + color_adj, 1)
-        if export_price > 0:
-            export_price = round(export_price + color_adj, 1)
-        auction_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
-        retail_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
-        export_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
-    elif color_desc:
-        auction_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
-        retail_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
-        export_reasoning_final += f"\n\n── 색상 보정 ──\n{color_desc}"
+    # ── 캘리브레이션 보정 reasoning ──
+    for _result, _label in [
+        (market_auction_result, "auction"),
+        (market_retail_result, "retail"),
+        (market_export_result, "export"),
+    ]:
+        _params = _result.blended_params
+        if _params and (_result.learned_correction_applied or _result.feedback_excluded > 0):
+            _desc = "\n\n── 캘리브레이션 보정 ──\n"
+            if _params.auto_cal_count > 0:
+                _desc += f"자동 보정 (LOO {_params.auto_cal_count}건)\n"
+            if _params.manual_feedback_count > 0:
+                _desc += f"수동 피드백 {_params.manual_feedback_count}건\n"
+            if _result.feedback_excluded > 0:
+                _desc += f"이상치 {_result.feedback_excluded}건 제외\n"
+            if _params.scale_factor != 1.0:
+                _desc += f"스케일 보정: ×{_params.scale_factor:.3f}\n"
+            if _params.price_bias != 0:
+                _desc += f"바이어스 보정: {_params.price_bias:+.1f}만원\n"
+            if _params.mileage_slope != 0:
+                _desc += f"주행거리 보정: {_params.mileage_slope:+.4f}/만km\n"
+            _desc += f"(신뢰도 {_params.confidence:.0%})"
+            if _label == "auction":
+                auction_reasoning_final += _desc
+            elif _label == "retail":
+                retail_reasoning_final += _desc
+            else:
+                export_reasoning_final += _desc
 
     # ── 낙찰가 < 소매가 정합성 체크 ──
     if final_auction > 0 and final_retail > 0 and final_auction >= final_retail * 0.97:

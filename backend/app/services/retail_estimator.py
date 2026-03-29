@@ -60,6 +60,9 @@ class RetailEstimateResult:
     details: str = ""
     confidence: str = "보통"
     quality_filter: str = ""
+    feedback_excluded: int = 0
+    learned_correction_applied: bool = False
+    blended_params: "LearnedParams | None" = None
     success: bool = False
 
 
@@ -73,6 +76,27 @@ MIN_VEHICLES_PER_BRACKET = 2  # 구간당 최소 차량 수
 MIN_TOTAL_VEHICLES = 3        # 전체 최소 차량 수 (이 이하면 추정 불가)
 MIN_VEHICLES_DESIRED = 6      # 소매 목표 차량 수 (이하이면 연식 확대)
 MIN_AUCTION_VEHICLES_DESIRED = 6   # 낙찰 목표 차량 수 (이하이면 연식 확대)
+
+
+def _filter_recent(
+    vehicles: list[dict], months: int = 3, date_field: str = "개최일",
+) -> list[dict]:
+    """최근 N개월 데이터만 필터링."""
+    from datetime import timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    return [v for v in vehicles if (v.get(date_field) or "") >= cutoff_str]
+
+
+def _filter_recent_staged(
+    vehicles: list[dict], min_count: int, date_field: str = "개최일",
+) -> tuple[list[dict], int]:
+    """3개월 → 6개월 → 12개월 → 전체 단계적 확장. (필터 결과, 사용 개월수) 반환."""
+    for months in (3, 6, 12):
+        recent = _filter_recent(vehicles, months, date_field)
+        if len(recent) >= min_count:
+            return recent, months
+    return vehicles, 0  # 전체 사용
 
 
 # =========================================================================
@@ -671,12 +695,66 @@ def _smooth_price_estimate(
 
     mileages = [d[0] for d in data]
     prices = [d[1] for d in data]
-    dist_weights = _gaussian_weights(mileages, target_mileage, bandwidth)
+    dist_weights = list(_gaussian_weights(mileages, target_mileage, bandwidth))
+
+    # ── 이상치 감쇄: 회귀 잔차 기반 MAD 방식 ──
+    # 주행거리 추세를 제거한 후 비정상적 저가 차량 가중치 감쇄
+    fmileages = [float(m) for m in mileages]
+    n_active = sum(1 for w in dist_weights if w > 0)
+    if n_active >= 15:
+        _w_sum = sum(dist_weights)
+        _wx = sum(w * x for w, x in zip(dist_weights, fmileages))
+        _wy = sum(w * p for w, p in zip(dist_weights, prices))
+        _wxx = sum(w * x * x for w, x in zip(dist_weights, fmileages))
+        _wxy = sum(w * x * p for w, x, p in zip(dist_weights, fmileages, prices))
+        _denom = _w_sum * _wxx - _wx ** 2
+        if abs(_denom) > 1e-10:
+            _b = (_w_sum * _wxy - _wx * _wy) / _denom
+            _a = (_wy - _b * _wx) / _w_sum
+            resids = [p - (_a + _b * m) for p, m in zip(prices, fmileages)]
+
+            # 가중 잔차 중위수
+            rw_active = sorted(
+                ((r, w) for r, w in zip(resids, dist_weights) if w > 0),
+                key=lambda x: x[0],
+            )
+            _tot = sum(w for _, w in rw_active)
+            _cum = 0.0
+            _r_med = 0.0
+            for r, w in rw_active:
+                _cum += w
+                if _cum >= _tot * 0.5:
+                    _r_med = r
+                    break
+
+            # 가중 MAD (Median Absolute Deviation)
+            ad_pairs = sorted(
+                ((abs(r - _r_med), w) for r, w in zip(resids, dist_weights) if w > 0),
+                key=lambda x: x[0],
+            )
+            _cum = 0.0
+            _mad = 0.0
+            for ad, w in ad_pairs:
+                _cum += w
+                if _cum >= _tot * 0.5:
+                    _mad = ad
+                    break
+            robust_sigma = 1.4826 * max(_mad, 1.0)
+
+            # 하한 이상치만 감쇄 (3σ_MAD 이하)
+            lower_bound = _r_med - 3.0 * robust_sigma
+            dampened = 0
+            for i, (r, w) in enumerate(zip(resids, dist_weights)):
+                if w > 0 and r < lower_bound:
+                    dist_weights[i] = w * 0.1
+                    dampened += 1
+            if dampened > 0:
+                print(f"  [MAD이상치] {dampened}건, MAD={_mad:.0f}, rσ={robust_sigma:.0f}, 하한={lower_bound:.0f}")
 
     weights = dist_weights
 
     if conservative:
-        # 보수적 추정: 추세선 기울기 유지 + 하위 40% 잔차 적용
+        # 보수적 추정: 추세선 기울기 유지 + 하위 35% 잔차 적용
         # (기존 절대가격 필터는 회귀 기울기를 왜곡하므로, 잔차 기반으로 변경)
         w_sum = sum(dist_weights)
         if w_sum > 0:
@@ -1278,6 +1356,53 @@ def _build_details(
 
 
 # =========================================================================
+# 피드백 기반 이상치 필터
+# =========================================================================
+
+def _apply_feedback_filter(
+    price_data: list[tuple[int, float]],
+    exclusion_pct: float,
+    direction: str,
+) -> tuple[list[tuple[int, float]], int]:
+    """정규화된 가격 데이터에서 피드백 기반 이상치 제거"""
+    if exclusion_pct <= 0 or len(price_data) < 5:
+        return price_data, 0
+    n_exclude = max(1, round(len(price_data) * exclusion_pct))
+    sorted_data = sorted(price_data, key=lambda x: x[1])
+    if direction == "up":
+        filtered = sorted_data[n_exclude:]
+    else:
+        filtered = sorted_data[:-n_exclude]
+    filtered.sort(key=lambda x: x[0])
+    return filtered, n_exclude
+
+
+# =========================================================================
+# 학습 보정 (Gaussian 평활 후 적용)
+# =========================================================================
+
+def _apply_learned_correction(
+    raw_price: float,
+    mileage: int,
+    scale_factor: float,
+    price_bias: float,
+    mileage_slope: float,
+    ref_mileage: float,
+) -> float:
+    """Gaussian 평활 후 학습된 보정 적용."""
+    delta_km = (mileage - ref_mileage) / 10000
+    corrected = raw_price * (scale_factor + mileage_slope * delta_km) + price_bias
+    return max(corrected, 0)
+
+
+def _needs_learned_correction(
+    scale_factor: float, price_bias: float, mileage_slope: float,
+) -> bool:
+    """학습 보정이 필요한지 판단."""
+    return scale_factor != 1.0 or price_bias != 0 or mileage_slope != 0
+
+
+# =========================================================================
 # 공개 API
 # =========================================================================
 
@@ -1365,6 +1490,14 @@ def estimate_retail_by_market(
     result.quality_filter = quality_desc
     logger.info("품질 필터: %s (API 보강: %d건)", quality_desc, enriched_count)
 
+    # 1.6단계: 최근 데이터 우선 (3개월 → 6개월 → 12개월 → 전체)
+    all_count = len(vehicles)
+    vehicles, used_months = _filter_recent_staged(vehicles, MIN_TOTAL_VEHICLES, "매물등록일")
+    if used_months > 0:
+        logger.info("소매 최근 %d개월 필터: %d → %d건", used_months, all_count, len(vehicles))
+    else:
+        logger.info("소매 최근 데이터 부족 — 전체 %d건 사용", len(vehicles))
+
     # 1.7단계: 대상 출고가 없으면 DB 조회 → 기준차량 중앙값 폴백
     if tgt_ref_price == 0:
         tgt_ref_price, tgt_ref_label = _resolve_target_ref_price(
@@ -1389,9 +1522,31 @@ def estimate_retail_by_market(
     price_data = _normalize_vehicles_price_only(
         vehicles, vehicle_class, price_field="소매가",
     )
+
     if price_data:
+        from app.services.calibration_engine import compute_blended_params
+        blended = compute_blended_params(
+            price_data, mileage, maker, model, trim, year,
+            price_type="retail", conservative=False,
+        )
+        result.blended_params = blended
+
+        # 사전 필터
+        if blended.exclusion_pct > 0 and blended.direction != "none":
+            price_data, result.feedback_excluded = _apply_feedback_filter(
+                price_data, blended.exclusion_pct, blended.direction,
+            )
+
         est_price, method = _smooth_price_estimate(price_data, mileage)
         if est_price > 0:
+            # 사후 보정
+            if _needs_learned_correction(blended.scale_factor, blended.price_bias, blended.mileage_slope):
+                est_price = _apply_learned_correction(
+                    est_price, mileage,
+                    blended.scale_factor, blended.price_bias,
+                    blended.mileage_slope, blended.ref_mileage,
+                )
+                result.learned_correction_applied = True
             result.estimated_retail = est_price
             if tgt_ref_price > 0:
                 result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
@@ -1428,6 +1583,9 @@ class AuctionEstimateResult:
     year_range_used: str = ""
     details: str = ""
     confidence: str = "보통"
+    feedback_excluded: int = 0
+    learned_correction_applied: bool = False
+    blended_params: "LearnedParams | None" = None
     success: bool = False
 
 
@@ -1592,6 +1750,14 @@ def estimate_auction_by_market(
         )
         return result
 
+    # 최근 데이터 우선 (3개월 → 6개월 → 12개월 → 전체)
+    all_count = len(vehicles)
+    vehicles, used_months = _filter_recent_staged(vehicles, MIN_TOTAL_VEHICLES, "개최일")
+    if used_months > 0:
+        logger.info("낙찰 최근 %d개월 필터: %d → %d건", used_months, all_count, len(vehicles))
+    else:
+        logger.info("낙찰 최근 데이터 부족 — 전체 %d건 사용", len(vehicles))
+
     # 대상 출고가 없으면 DB 조회 → 기준차량 중앙값 폴백
     if tgt_ref_price == 0:
         tgt_ref_price, tgt_ref_label = _resolve_target_ref_price(
@@ -1616,11 +1782,33 @@ def estimate_auction_by_market(
     price_data = _normalize_vehicles_price_only(
         vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
     )
+
     if price_data:
+        from app.services.calibration_engine import compute_blended_params
+        blended = compute_blended_params(
+            price_data, mileage, maker, model, trim, year,
+            price_type="auction", conservative=True,
+        )
+        result.blended_params = blended
+
+        # 사전 필터
+        if blended.exclusion_pct > 0 and blended.direction != "none":
+            price_data, result.feedback_excluded = _apply_feedback_filter(
+                price_data, blended.exclusion_pct, blended.direction,
+            )
+
         est_price, method = _smooth_price_estimate(
             price_data, mileage, conservative=True,
         )
         if est_price > 0:
+            # 사후 보정
+            if _needs_learned_correction(blended.scale_factor, blended.price_bias, blended.mileage_slope):
+                est_price = _apply_learned_correction(
+                    est_price, mileage,
+                    blended.scale_factor, blended.price_bias,
+                    blended.mileage_slope, blended.ref_mileage,
+                )
+                result.learned_correction_applied = True
             result.estimated_auction = est_price
             if tgt_ref_price > 0:
                 result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
@@ -1742,6 +1930,14 @@ def estimate_export_auction_by_market(
         )
         return result
 
+    # 최근 데이터 우선 (3개월 → 6개월 → 12개월 → 전체)
+    all_count = len(vehicles)
+    vehicles, used_months = _filter_recent_staged(vehicles, MIN_TOTAL_VEHICLES, "개최일")
+    if used_months > 0:
+        logger.info("수출 낙찰 최근 %d개월 필터: %d → %d건", used_months, all_count, len(vehicles))
+    else:
+        logger.info("수출 낙찰 최근 데이터 부족 — 전체 %d건 사용", len(vehicles))
+
     # 대상 출고가 없으면 DB 조회 → 기준차량 중앙값 폴백
     if tgt_ref_price == 0:
         tgt_ref_price, tgt_ref_label = _resolve_target_ref_price(
@@ -1766,11 +1962,33 @@ def estimate_export_auction_by_market(
     price_data = _normalize_vehicles_price_only(
         vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
     )
+
     if price_data:
+        from app.services.calibration_engine import compute_blended_params
+        blended = compute_blended_params(
+            price_data, mileage, maker, model, trim, year,
+            price_type="export", conservative=True,
+        )
+        result.blended_params = blended
+
+        # 사전 필터
+        if blended.exclusion_pct > 0 and blended.direction != "none":
+            price_data, result.feedback_excluded = _apply_feedback_filter(
+                price_data, blended.exclusion_pct, blended.direction,
+            )
+
         est_price, method = _smooth_price_estimate(
             price_data, mileage, conservative=True,
         )
         if est_price > 0:
+            # 사후 보정
+            if _needs_learned_correction(blended.scale_factor, blended.price_bias, blended.mileage_slope):
+                est_price = _apply_learned_correction(
+                    est_price, mileage,
+                    blended.scale_factor, blended.price_bias,
+                    blended.mileage_slope, blended.ref_mileage,
+                )
+                result.learned_correction_applied = True
             result.estimated_auction = est_price
             if tgt_ref_price > 0:
                 result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
