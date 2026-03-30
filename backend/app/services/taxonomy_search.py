@@ -124,7 +124,7 @@ def _common_trim_prefix(trims: list[str]) -> str:
 import re as _re
 
 _GEN_PREFIX_RE = _re.compile(
-    r"^(디\s*올\s*뉴|올\s*뉴|더\s*뉴|뉴)\s*", flags=_re.IGNORECASE
+    r"^(더\s*올\s*뉴|디\s*올\s*뉴|올\s*뉴|더\s*뉴|뉴)\s*", flags=_re.IGNORECASE
 )
 
 # 흔한 오타 보정 (정규화 시 적용)

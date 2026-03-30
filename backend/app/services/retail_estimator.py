@@ -1446,12 +1446,23 @@ def estimate_retail_by_market(
         logger.info("소매가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용
-    vehicles = search_retail_db(
-        model=model, maker=maker, trim=trim, fuel=fuel,
-        year_min=year, year_max=year, limit=500,
-    )
-    result.year_range_used = f"{year}년"
+    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (부족 시 연식 자동 확대)
+    vehicles = []
+    year_range_used = f"{year}년"
+    for y_delta in (0, 1, 2, 3):
+        y_min = year - y_delta
+        y_max = year + y_delta
+        vehicles = search_retail_db(
+            model=model, maker=maker, trim=trim, fuel=fuel,
+            year_min=y_min, year_max=y_max, limit=500,
+        )
+        if y_delta == 0:
+            year_range_used = f"{year}년"
+        else:
+            year_range_used = f"{y_min}~{y_max}년"
+        if len(vehicles) >= MIN_TOTAL_VEHICLES:
+            break
+    result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
     logger.info(
@@ -1678,13 +1689,24 @@ def estimate_auction_by_market(
         logger.info("낙찰가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용
-    vehicles = search_auction_db(
-        model=model, maker=maker, trim=trim, fuel=fuel,
-        year_min=year, year_max=year, limit=500,
-        domestic_only=True,
-    )
-    result.year_range_used = f"{year}년"
+    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (부족 시 연식 자동 확대)
+    vehicles = []
+    year_range_used = f"{year}년"
+    for y_delta in (0, 1, 2, 3):
+        y_min = year - y_delta
+        y_max = year + y_delta
+        vehicles = search_auction_db(
+            model=model, maker=maker, trim=trim, fuel=fuel,
+            year_min=y_min, year_max=y_max, limit=500,
+            domestic_only=True,
+        )
+        if y_delta == 0:
+            year_range_used = f"{year}년"
+        else:
+            year_range_used = f"{y_min}~{y_max}년"
+        if len(vehicles) >= MIN_TOTAL_VEHICLES:
+            break
+    result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
     logger.info(
@@ -1876,13 +1898,24 @@ def estimate_export_auction_by_market(
         result.details = "트림 정보 없음 — 수출 낙찰가 추정 불가"
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료 수출만
-    vehicles = search_auction_db(
-        model=model, maker=maker, trim=trim, fuel=fuel,
-        year_min=year, year_max=year, limit=500,
-        domestic_only=False, export_only=True,
-    )
-    result.year_range_used = f"{year}년"
+    # 같은 트림 + 같은 연식 + 같은 연료 수출만 (부족 시 연식 자동 확대)
+    vehicles = []
+    year_range_used = f"{year}년"
+    for y_delta in (0, 1, 2, 3):
+        y_min = year - y_delta
+        y_max = year + y_delta
+        vehicles = search_auction_db(
+            model=model, maker=maker, trim=trim, fuel=fuel,
+            year_min=y_min, year_max=y_max, limit=500,
+            domestic_only=False, export_only=True,
+        )
+        if y_delta == 0:
+            year_range_used = f"{year}년"
+        else:
+            year_range_used = f"{y_min}~{y_max}년"
+        if len(vehicles) >= MIN_TOTAL_VEHICLES:
+            break
+    result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
     logger.info(

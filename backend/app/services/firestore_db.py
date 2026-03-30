@@ -36,10 +36,27 @@ def _search_token_variants(token: str) -> list[str]:
     return variants
 
 
-def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
-    """트림 유연 매칭: 양방향 포함 관계면 동일 트림으로 판단.
+def _normalize_trim(trim: str) -> str:
+    """트림 정규화: '기본형', '(세부등급 없음)' 등 제거 + 소문자."""
+    t = trim.strip().lower()
+    # "기본형", "(세부등급 없음)", "(세부등급없음)" 제거
+    for tag in ("(세부등급 없음)", "(세부등급없음)", "기본형"):
+        t = t.replace(tag, "")
+    return t.strip()
 
-    예: "모던" ↔ "1.6 모던" ↔ "1.6 가솔린 모던" 모두 매칭.
+
+def _trim_tokens(trim: str) -> set[str]:
+    """트림에서 핵심 토큰 추출 (배기량, 구동방식, 등급 등)."""
+    return {tok for tok in trim.split() if tok}
+
+
+def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
+    """트림 유연 매칭.
+
+    1) 양방향 포함 관계면 매칭.
+    2) 정규화 후 양방향 포함.
+    3) 정규화 후 대상 토큰이 모두 차량 트림에 포함되면 매칭.
+       예: "2.5 AWD 기본형" → tokens {"2.5", "awd"} ⊆ "2.5t 가솔린 awd"
     """
     if not target_trim:
         return True
@@ -49,7 +66,40 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
     v = vehicle_trim.strip().lower()
     if t == v:
         return True
-    return t in v or v in t
+    if t in v or v in t:
+        return True
+
+    # 정규화 후 재시도
+    tn = _normalize_trim(target_trim)
+    vn = _normalize_trim(vehicle_trim)
+    if not tn:
+        return True  # "기본형" 만 있으면 모든 트림 매칭
+    if tn == vn:
+        return True
+    if tn in vn or vn in tn:
+        return True
+
+    # 토큰 기반 매칭: 대상 트림의 핵심 토큰이 모두 차량 트림에 포함
+    t_tokens = _trim_tokens(tn)
+    if t_tokens:
+        v_text = vn
+        # "2.5" ↔ "2.5t" 등 배기량 유연 매칭
+        if all(_token_in_text(tok, v_text) for tok in t_tokens):
+            return True
+
+    return False
+
+
+def _token_in_text(token: str, text: str) -> bool:
+    """토큰이 텍스트에 포함되는지 유연 매칭.
+    배기량 숫자는 접두사 매칭 (2.5 → 2.5t 허용).
+    """
+    if token in text:
+        return True
+    # 배기량 패턴: "2.5" → "2.5t", "3.3" → "3.3t" 등
+    if re.match(r"^\d+\.\d+$", token):
+        return any(part.startswith(token) for part in text.split())
+    return False
 
 
 # =========================================================================
