@@ -36,6 +36,22 @@ def _search_token_variants(token: str) -> list[str]:
     return variants
 
 
+def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
+    """트림 유연 매칭: 양방향 포함 관계면 동일 트림으로 판단.
+
+    예: "모던" ↔ "1.6 모던" ↔ "1.6 가솔린 모던" 모두 매칭.
+    """
+    if not target_trim:
+        return True
+    if not vehicle_trim:
+        return False
+    t = target_trim.strip().lower()
+    v = vehicle_trim.strip().lower()
+    if t == v:
+        return True
+    return t in v or v in t
+
+
 # =========================================================================
 # 내부 헬퍼
 # =========================================================================
@@ -203,6 +219,15 @@ def _ts_to_iso(val) -> str:
     return str(val)[:10]
 
 
+def _name_with_trim(data: dict) -> str:
+    """차명 + 트림 (중복 방지)"""
+    name = data.get("vehicleName") or data.get("title") or ""
+    trim = data.get("vehicleTrim") or ""
+    if trim and trim not in name:
+        return f"{name} {trim}"
+    return name
+
+
 def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     """Firestore doc → 기존 auction_db 반환 형식 (한/영 혼합 키)"""
     # 옵션: [{name, price}] → "선루프, 네비, ..." 문자열
@@ -256,7 +281,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     return {
         # 한글 키 (기존 호출자 호환)
         "auction_id": doc_id,
-        "차명": data.get("vehicleName") or data.get("title") or "",
+        "차명": _name_with_trim(data),
         "제작사": data.get("vehicleMaker") or "",
         "모델": data.get("vehicleModel") or "",
         "연식": int(_safe_number(data.get("vehicleYear"))),
@@ -328,11 +353,24 @@ def _match_contains(value: str | None, keyword: str | None) -> bool:
     return kw_compact in val_compact
 
 
+def _is_hybrid(fuel: str) -> bool:
+    """하이브리드/PHEV/전기복합 여부 판별"""
+    f = fuel.lower()
+    return ("하이브리드" in f or "hybrid" in f or "hev" in f
+            or "전기" in f and "가솔린" in f   # 가솔린+전기 = PHEV
+            or "전기" in f and ("디젤" in f or "경유" in f))
+
+
 def _match_fuel(value: str | None, keyword: str | None) -> bool:
-    """연료 동의어를 포함한 매칭 (가솔린↔휘발유, 디젤↔경유 등)"""
+    """연료 동의어를 포함한 매칭 (가솔린↔휘발유, 디젤↔경유 등).
+    하이브리드/비하이브리드를 엄격 구분: 가솔린 ≠ 가솔린 하이브리드.
+    """
     if not keyword:
         return True
     if not value:
+        return False
+    # 하이브리드 구분: 양쪽이 일치해야 함
+    if _is_hybrid(keyword) != _is_hybrid(value):
         return False
     # 일반 매칭
     if keyword.lower() in value.lower():
@@ -426,15 +464,15 @@ def search_retail_db(
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
 
+    _ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
     fetch_limit = min(limit * 10, 5000)
     # 하이픈 변형 토큰으로 모두 검색하여 합침
     seen_ids: set[str] = set()
     docs = []
     for token in _search_token_variants(model_lower) if model_lower else [""]:
+        query = col.where(filter=FieldFilter("companyId", "==", _ENCAR_COMPANY_ID))
         if token:
-            query = col.where(filter=FieldFilter("searchTokens", "array_contains", token))
-        else:
-            query = col
+            query = query.where(filter=FieldFilter("searchTokens", "array_contains", token))
         for doc in query.limit(fetch_limit).get():
             if doc.id not in seen_ids:
                 seen_ids.add(doc.id)
@@ -450,13 +488,20 @@ def search_retail_db(
             if not _match_maker(vehicle_maker, maker):
                 continue
 
-        # 소매가 필수 (estimatedRetailPrice 우선, 없으면 estimatedPurchasePrice 폴백)
-        retail_price = _safe_number(data.get("estimatedRetailPrice")) or _safe_number(data.get("estimatedPurchasePrice"))
+        # 소매가 필수 (actualBidPrice가 엔카 소매가)
+        retail_price = _safe_number(data.get("actualBidPrice"))
         if retail_price <= 0:
             continue
 
-        # 낙찰가가 있는 차량은 헤이딜러 데이터 → 소매 목록에서 제외
-        if _safe_number(data.get("actualBidPrice")) > 0:
+        # 이상치 제거: 소매가 100만원 미만 또는 9,000만원 초과
+        retail_manwon = retail_price / 10000 if retail_price > 100000 else retail_price
+        if retail_manwon < 100 or retail_manwon > 9000:
+            continue
+
+        # 출고가와 기본가 모두 없으면 제외
+        raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+        raw_base = _safe_number(data.get("vehicleBasePrice"))
+        if raw_factory <= 0 and raw_base <= 0:
             continue
 
         # 연식 범위
@@ -470,9 +515,11 @@ def search_retail_db(
         if not _match_fuel(data.get("fuelType"), fuel):
             continue
 
-        # 트림 (부분 매칭)
-        if not _match_contains(data.get("vehicleTrim"), trim):
-            continue
+        # 트림 (유연 매칭: 양방향 포함)
+        if trim:
+            v_trim_raw = (data.get("vehicleTrim") or "")
+            if not _match_trim(trim, v_trim_raw):
+                continue
 
         # 주행거리 상한
         mileage = int(_safe_number(data.get("mileage")))
@@ -480,6 +527,17 @@ def search_retail_db(
             continue
 
         results.append(_to_retail_dict(doc.id, data))
+
+    # 중복 제거 (차명+주행거리+소매가 동일 → 출고가 있는 쪽 우선)
+    dedup: dict[tuple, dict] = {}
+    for r in results:
+        key = (r.get("차명", ""), r.get("주행거리", 0), r.get("소매가", 0))
+        existing = dedup.get(key)
+        if existing is None:
+            dedup[key] = r
+        elif r.get("factory_price", 0) > 0 and existing.get("factory_price", 0) <= 0:
+            dedup[key] = r
+    results = list(dedup.values())
 
     # 정렬
     if sort_by == "가격":
@@ -575,6 +633,12 @@ def search_auction_db(
         if price <= 0:
             continue
 
+        # 출고가와 기본가 모두 없으면 제외
+        raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+        raw_base = _safe_number(data.get("vehicleBasePrice"))
+        if raw_factory <= 0 and raw_base <= 0:
+            continue
+
         # 연식 범위 (Firestore에서 문자열로 올 수 있으므로 int 변환)
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -590,9 +654,11 @@ def search_auction_db(
         if not _match_contains(data.get("driveType"), drive):
             continue
 
-        # 트림 (부분 매칭)
-        if not _match_contains(data.get("vehicleTrim"), trim):
-            continue
+        # 트림 (유연 매칭: 양방향 포함)
+        if trim:
+            v_trim_raw = (data.get("vehicleTrim") or "")
+            if not _match_trim(trim, v_trim_raw):
+                continue
 
         # 주행거리 상한 (Firestore에서 문자열로 올 수 있으므로 숫자 변환)
         mileage = int(_safe_number(data.get("mileage")))
@@ -807,9 +873,9 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _to_retail_dict(doc_id: str, data: dict) -> dict:
-    """엔카 소매가 차량용 dict"""
-    # estimatedRetailPrice 우선, 없으면 estimatedPurchasePrice 폴백
-    retail_price = _safe_number(data.get("estimatedRetailPrice")) or _safe_number(data.get("estimatedPurchasePrice"))
+    """소매가 차량용 dict"""
+    # actualBidPrice가 엔카 소매가
+    retail_price = _safe_number(data.get("actualBidPrice"))
     if retail_price > 100000:
         retail_price = round(retail_price / 10000, 0)
 
@@ -989,9 +1055,21 @@ def search_retail_vehicles(
         if _safe_number(data.get("actualBidPrice")) > 0:
             continue
 
+        # 출고가와 기본가 모두 없으면 제외
+        raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+        raw_base = _safe_number(data.get("vehicleBasePrice"))
+        if raw_factory <= 0 and raw_base <= 0:
+            continue
+
+        # 트림 (유연 매칭: 양방향 포함)
+        if trim:
+            v_trim_raw = (data.get("vehicleTrim") or "")
+            if not _match_trim(trim, v_trim_raw):
+                continue
+
         all_candidates.append((doc.id, data))
 
-    # 1단계: 엄격 매칭 (generation + fuelType + trim + year 모두 일치)
+    # 1단계: 엄격 매칭 (generation + fuelType + year 모두 일치)
     strict_results = []
     relaxed_pool = []
 
@@ -1008,11 +1086,6 @@ def search_retail_vehicles(
         if fuel:
             v_fuel = (data.get("fuelType") or "").lower()
             if fuel.lower() not in v_fuel:
-                is_strict = False
-
-        # trim 매칭
-        if trim:
-            if not _match_contains(data.get("vehicleTrim"), trim):
                 is_strict = False
 
         # year 매칭 (±1년)
@@ -1056,12 +1129,13 @@ def fetch_comparable_vehicles(
     model: str,
     year: int,
     fuel: str | None = None,
+    trim: str | None = None,
     limit: int = 100,
 ) -> list[dict]:
-    """유사차량 검색 (LLM 분석용) — 출고가 있는 차량 우선"""
+    """유사차량 검색 (LLM 분석용) — 같은 연식, 출고가 있는 차량 우선"""
     vehicles = search_auction_db(
-        model=model, maker=maker, fuel=fuel,
-        year_min=year - 3, year_max=year + 3,
+        model=model, maker=maker, fuel=fuel, trim=trim,
+        year_min=year, year_max=year,
         limit=limit, sort_by="날짜",
     )
     # 출고가(factory_price)가 있는 차량을 우선 정렬
@@ -1117,9 +1191,21 @@ def search_auction_by_tokens(
         if "수출" in dest:
             continue
 
+        # 출고가와 기본가 모두 없으면 제외
+        raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
+        raw_base = _safe_number(data.get("vehicleBasePrice"))
+        if raw_factory <= 0 and raw_base <= 0:
+            continue
+
+        # 트림 (유연 매칭: 양방향 포함)
+        if target_trim:
+            v_trim_raw = (data.get("vehicleTrim") or "")
+            if not _match_trim(target_trim, v_trim_raw):
+                continue
+
         all_candidates.append((doc.id, data))
 
-    # 1단계: 엄격 매칭 (generation + fuelType + trim + year 모두 일치)
+    # 1단계: 엄격 매칭 (generation + fuelType + year 모두 일치)
     strict_results = []
     relaxed_pool = []
 
@@ -1136,11 +1222,6 @@ def search_auction_by_tokens(
         if target_fuel:
             v_fuel = (data.get("fuelType") or "").lower()
             if target_fuel.lower() not in v_fuel:
-                is_strict = False
-
-        # trim 매칭
-        if target_trim:
-            if not _match_contains(data.get("vehicleTrim"), target_trim):
                 is_strict = False
 
         # year 매칭 (±1년)

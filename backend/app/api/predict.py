@@ -57,6 +57,9 @@ class PredictPriceResponse(BaseModel):
     retail_stats: PriceStatsResponse | None = None
     comparable_auction_vehicles: list[dict] = []
     comparable_retail_vehicles: list[dict] = []
+    retail_brackets: list[dict] = []
+    auction_brackets: list[dict] = []
+    export_brackets: list[dict] = []
 
 
 @router.post("/predict-price", response_model=PredictPriceResponse)
@@ -137,6 +140,9 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             retail_stats=_to_stats(result.retail_stats),
             comparable_auction_vehicles=result.comparable_auction_vehicles,
             comparable_retail_vehicles=result.comparable_retail_vehicles,
+            retail_brackets=result.retail_brackets,
+            auction_brackets=result.auction_brackets,
+            export_brackets=result.export_brackets,
         )
 
     except Exception as e:
@@ -251,6 +257,9 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "retailStats": result.retail_stats or None,
             "comparableAuctionVehicles": result.comparable_auction_vehicles,
             "comparableRetailVehicles": result.comparable_retail_vehicles,
+            "retailBrackets": result.retail_brackets,
+            "auctionBrackets": result.auction_brackets,
+            "exportBrackets": result.export_brackets,
             "updatedAt": SERVER_TIMESTAMP,
             "error": None,
         })

@@ -198,8 +198,8 @@ def search_encar_retail(
                         continue
 
                 if trim_lower:
-                    item_badge = (item.get("Badge") or "").lower()
-                    if trim_lower not in item_badge:
+                    item_badge = (item.get("Badge") or "").lower().strip()
+                    if trim_lower not in item_badge and item_badge not in trim_lower:
                         continue
 
                 item_mileage = item.get("Mileage") or 0

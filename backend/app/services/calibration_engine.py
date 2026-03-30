@@ -444,10 +444,11 @@ def _leave_one_out_residuals(
     Leave-One-Out 자동보정 잔차 계산.
 
     price_data: estimator가 정규화한 [(mileage, price), ...]
-    len < 5이면 빈 리스트 반환.
+    len < 15이면 빈 리스트 반환 (희소 데이터 과적합 방지).
     """
     n = len(price_data)
-    if n < 5:
+    if n < 15:
+        logger.info("LOO 자동보정 스킵: 데이터 %d건 < 최소 15건", n)
         return []
 
     from app.services.retail_estimator import (

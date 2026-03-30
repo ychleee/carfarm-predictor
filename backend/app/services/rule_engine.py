@@ -984,6 +984,7 @@ class RuleEngine:
             mileage=target.mileage,
             factory_price=target.factory_price,
             base_price=target.base_price,
+            fuel=target.fuel,
         )
         if auction_market.success:
             result.estimated_auction = auction_market.estimated_auction
@@ -1013,6 +1014,7 @@ class RuleEngine:
             mileage=target.mileage,
             factory_price=target.factory_price,
             base_price=target.base_price,
+            fuel=target.fuel,
         )
 
         result.estimated_retail = retail_result.estimated_retail if retail_result.success else 0

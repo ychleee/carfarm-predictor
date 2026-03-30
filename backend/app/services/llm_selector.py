@@ -153,22 +153,8 @@ def _build_target_summary(target: dict) -> str:
                 val = ", ".join(str(v) for v in val)
             lines.append(f"- {label}: {val}")
 
-    # 진단 정보 (프레임/외판)
-    diag_parts = []
-    fe = target.get("frame_exchange", 0)
-    fb = target.get("frame_bodywork", 0)
-    fc = target.get("frame_corrosion", 0)
-    if fe or fb or fc:
-        diag_parts.append(f"프레임(교환{fe}/판금{fb}/부식{fc})")
-    ee = target.get("exterior_exchange", 0)
-    eb = target.get("exterior_bodywork", 0)
-    ec = target.get("exterior_corrosion", 0)
-    if ee or eb or ec:
-        diag_parts.append(f"외판(교환{ee}/판금{eb}/부식{ec})")
-    if diag_parts:
-        lines.append(f"- 진단: {', '.join(diag_parts)}")
-    elif target.get("exchange_count", 0) or target.get("bodywork_count", 0):
-        lines.append(f"- 교환: {target.get('exchange_count', 0)}, 판금: {target.get('bodywork_count', 0)}")
+    # 대상차량은 항상 AA등급(무사고)으로 가정 — 실제 검차 상태 전달하지 않음
+    lines.append("- 검차상태: AA등급 (무사고 가정)")
 
     return "\n".join(lines) if lines else "정보 없음"
 

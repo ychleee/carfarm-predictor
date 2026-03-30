@@ -7,32 +7,8 @@ from app.services.taxonomy_search import (
     search_vehicles, get_makers, get_models, get_generations, get_variants, get_trims,
 )
 from app.services.firestore_db import search_auction_db, get_price_stats
-from app.services.encar_api import enrich_with_details
 
 router = APIRouter()
-
-_ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
-
-
-async def _enrich_encar_data(mapped: list[dict]) -> None:
-    """엔카 API로 보강: 기본가(originPrice→base_price), 옵션, 엔카진단"""
-    original_ids = {}
-    for r in mapped:
-        aid = r["auction_id"]
-        if aid.startswith("encar_"):
-            stripped = aid[len("encar_"):]
-            original_ids[stripped] = aid
-            r["auction_id"] = stripped
-
-    await enrich_with_details(mapped)
-
-    for r in mapped:
-        aid = r["auction_id"]
-        if aid in original_ids:
-            r["auction_id"] = original_ids[aid]
-        # 엔카진단
-        if r.get("has_diagnosis"):
-            r["has_encar_diagnosis"] = True
 
 
 @router.get("/vehicle-info")
@@ -201,10 +177,6 @@ async def search_auction_endpoint(
             "has_encar_diagnosis": False,
             "status": r.get("status", ""),
         })
-
-    # 엔카 데이터: 기본가·옵션·엔카진단 보강
-    if company_id == _ENCAR_COMPANY_ID and mapped:
-        await _enrich_encar_data(mapped)
 
     return {"count": len(mapped), "results": mapped}
 

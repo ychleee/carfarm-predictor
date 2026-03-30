@@ -383,6 +383,7 @@ def analyze_criteria(
     model_name = target.get("model", "")
     year = target.get("year", 2024)
     fuel = target.get("fuel")
+    trim = target.get("trim")
 
     # 1) 유사 차량 수집
     vehicles = fetch_comparable_vehicles(
@@ -390,6 +391,7 @@ def analyze_criteria(
         model=model_name,
         year=year,
         fuel=fuel,
+        trim=trim,
         limit=100,
     )
 

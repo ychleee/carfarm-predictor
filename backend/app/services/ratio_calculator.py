@@ -271,6 +271,7 @@ def calculate_with_criteria(
         # ── 낙찰가: 시장 데이터 단독 ──
         target_mileage_val = target.get("mileage", 0) or 0
         target_year_val = target.get("year", 0) or 0
+        target_fuel = target.get("fuel", "") or ""
         auction_market = estimate_auction_by_market(
             maker=target.get("maker", ""),
             model=target.get("model", ""),
@@ -279,6 +280,7 @@ def calculate_with_criteria(
             mileage=target_mileage_val,
             factory_price=target.get("factory_price", 0) or 0,
             base_price=target.get("base_price", 0) or 0,
+            fuel=target_fuel,
         )
         if auction_market.success:
             estimated_auction = auction_market.estimated_auction
@@ -295,6 +297,7 @@ def calculate_with_criteria(
             mileage=target_mileage_val,
             factory_price=target.get("factory_price", 0) or 0,
             base_price=target.get("base_price", 0) or 0,
+            fuel=target_fuel,
         )
 
         estimated_retail = retail_result.estimated_retail if retail_result.success else 0
@@ -386,6 +389,7 @@ def calculate_with_criteria(
         # ── 낙찰가: 시장 데이터 단독 ──
         target_mileage_val = target.get("mileage", 0) or 0
         target_year_val = target.get("year", 0) or 0
+        target_fuel = target.get("fuel", "") or ""
         auction_market = estimate_auction_by_market(
             maker=target.get("maker", ""),
             model=target.get("model", ""),
@@ -394,6 +398,7 @@ def calculate_with_criteria(
             mileage=target_mileage_val,
             factory_price=target.get("factory_price", 0) or 0,
             base_price=target.get("base_price", 0) or 0,
+            fuel=target_fuel,
         )
         if auction_market.success:
             estimated_auction = auction_market.estimated_auction
@@ -408,6 +413,7 @@ def calculate_with_criteria(
             mileage=target_mileage_val,
             factory_price=target.get("factory_price", 0) or 0,
             base_price=target.get("base_price", 0) or 0,
+            fuel=target_fuel,
         )
 
         estimated_retail = retail_result.estimated_retail if retail_result.success else 0
