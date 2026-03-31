@@ -299,7 +299,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
 
     color = data.get("vehicleColor") or ""
 
-    sale_date = data.get("saleDate") or data.get("createdAt")
+    sale_date = data.get("saleDate") or data.get("updatedAt")
 
     # 기본가 / 출고가 (원 → 만원 변환)
     raw_base = _safe_number(data.get("vehicleBasePrice"))
@@ -870,7 +870,7 @@ def get_price_stats(
             continue
 
         # 날짜 필터
-        sale_date = data.get("saleDate") or data.get("createdAt")
+        sale_date = data.get("saleDate") or data.get("updatedAt")
         if sale_date and hasattr(sale_date, "timestamp"):
             if sale_date < cutoff:
                 continue
@@ -1029,7 +1029,7 @@ def _calc_similarity(
                 score += 200
 
     # 4순위: 판매일 최신 (최대 300점, 최근일수록 높음)
-    sale_date = data.get("saleDate") or data.get("createdAt")
+    sale_date = data.get("saleDate") or data.get("updatedAt")
     if sale_date:
         iso = _ts_to_iso(sale_date)
         if iso and len(iso) >= 10:
