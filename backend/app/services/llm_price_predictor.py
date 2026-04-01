@@ -923,10 +923,20 @@ def predict_price(
     auction_brackets = _serialize_brackets(market_auction_result.brackets) if market_auction_result.brackets else []
     export_brackets = _serialize_brackets(market_export_result.brackets) if market_export_result.brackets else []
 
-    # ── 유사차량 compact 직렬화 (Firestore 저장용) ──
-    compact_auction = [_compact_auction_vehicle(v) for v in auction_vehicles[:20]]
-    compact_retail = [_compact_retail_vehicle(v) for v in retail_vehicles[:15]]
+    # ── 유사차량 compact 직렬화 (시장 추정에 사용된 전체 차량) ──
+    # 낙찰: 내수 + 수출 통합
+    market_auction_all = market_auction_result.vehicles + market_export_result.vehicles
+    if market_auction_all:
+        compact_auction = [_compact_auction_vehicle(v) for v in market_auction_all]
+    else:
+        compact_auction = [_compact_auction_vehicle(v) for v in auction_vehicles[:20]]
 
+    if market_retail_result.vehicles:
+        compact_retail = [_compact_retail_vehicle(v) for v in market_retail_result.vehicles]
+    else:
+        compact_retail = [_compact_retail_vehicle(v) for v in retail_vehicles[:15]]
+
+    market_total = len(compact_auction) + len(compact_retail)
     result = PricePrediction(
         estimated_auction=final_auction,
         estimated_auction_export=export_price,
@@ -942,7 +952,7 @@ def predict_price(
         retail_factors=retail_factors,
         comparable_summary=parsed.get("comparable_summary", ""),
         key_comparables=parsed.get("key_comparables", []),
-        vehicles_analyzed=total_vehicles,
+        vehicles_analyzed=market_total if market_total > 0 else total_vehicles,
         auction_stats=auction_stats,
         retail_stats=retail_stats,
         comparable_auction_vehicles=compact_auction,

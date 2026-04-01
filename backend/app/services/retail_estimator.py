@@ -63,6 +63,7 @@ class RetailEstimateResult:
     learned_correction_applied: bool = False
     blended_params: "LearnedParams | None" = None
     success: bool = False
+    vehicles: list[dict] = field(default_factory=list)  # 사용된 전체 차량
 
 
 # =========================================================================
@@ -1479,6 +1480,7 @@ def estimate_retail_by_market(
         return result
 
     result.vehicles_found = len(vehicles)
+    result.vehicles = vehicles
     result.quality_filter = f"전체 {len(vehicles)}건"
 
     # 1.5단계: 최근 데이터 우선 (3개월 → 6개월 → 12개월 → 전체)
@@ -1560,6 +1562,7 @@ class AuctionEstimateResult:
     learned_correction_applied: bool = False
     blended_params: "LearnedParams | None" = None
     success: bool = False
+    vehicles: list[dict] = field(default_factory=list)  # 사용된 전체 차량
 
 
 def _build_auction_brackets(
@@ -1709,6 +1712,7 @@ def estimate_auction_by_market(
     result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
+    result.vehicles = vehicles
     logger.info(
         "낙찰가 추정: %s %s %s %s — %d건",
         maker, model, trim, result.year_range_used, len(vehicles),
@@ -1918,6 +1922,7 @@ def estimate_export_auction_by_market(
     result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
+    result.vehicles = vehicles
     logger.info(
         "수출 낙찰가 추정: %s %s %s %s — %d건",
         maker, model, trim, result.year_range_used, len(vehicles),
