@@ -373,6 +373,9 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "company_id": data.get("companyId") or "",
         "description": data.get("description") or "",
         "status": data.get("status") or "",
+        "has_diagnosis": bool(
+            data.get("diagnosisCar") or data.get("has_diagnosis")
+        ),
     }
 
 
@@ -554,6 +557,15 @@ def search_retail_db(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
+        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        _price_mw = _normalize_price(retail_price)
+        _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
+        _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
+            continue
+        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
+            continue
+
         # 연식 범위
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -687,6 +699,15 @@ def search_auction_db(
         raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
         raw_base = _safe_number(data.get("vehicleBasePrice"))
         if raw_factory <= 0 and raw_base <= 0:
+            continue
+
+        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        _price_mw = _normalize_price(price)
+        _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
+        _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
+            continue
+        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
             continue
 
         # 연식 범위 (Firestore에서 문자열로 올 수 있으므로 int 변환)
@@ -978,6 +999,7 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "옵션": options_str,
         "연료": data.get("fuelType") or "",
         "매물등록일": _ts_to_iso(data.get("createdAt")),
+        "개최일": _ts_to_iso(data.get("saleDate") or data.get("updatedAt")),
         "검차일": data.get("inspectionScheduleDate") or "",
         "source": "encar",
         "exchange_count": exchange_count,
@@ -990,6 +1012,10 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "exterior_exchange": damage_stats["exterior_exchange"],
         "exterior_bodywork": damage_stats["exterior_bodywork"],
         "exterior_corrosion": damage_stats["exterior_corrosion"],
+        "status": data.get("status") or "",
+        "has_diagnosis": bool(
+            data.get("diagnosisCar") or data.get("has_diagnosis")
+        ),
     }
 
 
@@ -1245,6 +1271,15 @@ def search_auction_by_tokens(
         raw_factory = _safe_number(data.get("vehicleFactoryPrice"))
         raw_base = _safe_number(data.get("vehicleBasePrice"))
         if raw_factory <= 0 and raw_base <= 0:
+            continue
+
+        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        _price_mw = _normalize_price(price)
+        _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
+        _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
+            continue
+        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
             continue
 
         # 트림 (유연 매칭: 양방향 포함)

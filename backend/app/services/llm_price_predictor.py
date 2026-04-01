@@ -406,7 +406,7 @@ def _format_auction_table(vehicles: list[dict]) -> str:
 
         sale_date = v.get("개최일", "")
         if sale_date and len(str(sale_date)) > 7:
-            sale_date = str(sale_date)[:7]  # YYYY-MM
+            sale_date = str(sale_date)[:10]  # YYYY-MM
 
         is_export = "Y" if v.get("is_export", 0) else ""
 
@@ -455,7 +455,7 @@ def _format_retail_table(vehicles: list[dict]) -> str:
 
         listing_date = v.get("매물등록일", "") or v.get("listing_date", "")
         if listing_date and len(str(listing_date)) > 7:
-            listing_date = str(listing_date)[:7]
+            listing_date = str(listing_date)[:10]
 
         lines.append(
             f"{v.get('auction_id', '')[:12]} | "
@@ -642,7 +642,7 @@ def _compact_auction_vehicle(v: dict) -> dict:
     """낙찰 유사차량 → compact dict (Firestore 용량 절약)"""
     sale_date = v.get("개최일", "")
     if sale_date and len(str(sale_date)) > 7:
-        sale_date = str(sale_date)[:7]
+        sale_date = str(sale_date)[:10]
     return {
         "id": v.get("auction_id", ""),
         "nm": v.get("차명", "") or v.get("vehicle_name", ""),
@@ -660,21 +660,22 @@ def _compact_auction_vehicle(v: dict) -> dict:
         "fb": v.get("frame_bodywork", 0) or 0,
         "ee": v.get("exterior_exchange", 0) or 0,
         "eb": v.get("exterior_bodywork", 0) or 0,
+        "dg": 1 if v.get("has_diagnosis") else 0,
     }
 
 
 def _compact_retail_vehicle(v: dict) -> dict:
     """소매 유사차량 → compact dict"""
-    listing_date = v.get("매물등록일", "") or v.get("listing_date", "")
-    if listing_date and len(str(listing_date)) > 7:
-        listing_date = str(listing_date)[:7]
+    sale_date = v.get("개최일", "") or v.get("매물등록일", "") or v.get("listing_date", "")
+    if sale_date and len(str(sale_date)) > 7:
+        sale_date = str(sale_date)[:10]
     return {
         "id": v.get("auction_id", ""),
         "nm": v.get("차명", "") or v.get("vehicle_name", ""),
         "yr": v.get("연식", 0) or 0,
         "ml": v.get("주행거리", 0) or 0,
         "pr": round(v.get("소매가", 0) or 0),
-        "dt": listing_date,
+        "dt": sale_date,
         "cl": v.get("색상", ""),
         "tr": v.get("trim", ""),
         "fl": v.get("연료", ""),
@@ -684,6 +685,8 @@ def _compact_retail_vehicle(v: dict) -> dict:
         "fb": v.get("frame_bodywork", 0) or 0,
         "ee": v.get("exterior_exchange", 0) or 0,
         "eb": v.get("exterior_bodywork", 0) or 0,
+        "st": v.get("status", ""),
+        "dg": 1 if v.get("has_diagnosis") else 0,
     }
 
 
