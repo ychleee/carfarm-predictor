@@ -331,7 +331,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
     return {
         # 한글 키 (기존 호출자 호환)
         "auction_id": doc_id,
-        "차명": _name_with_trim(data),
+        "차명": data.get("vehicleName") or data.get("title") or "",
         "제작사": data.get("vehicleMaker") or "",
         "모델": data.get("vehicleModel") or "",
         "연식": int(_safe_number(data.get("vehicleYear"))),
@@ -374,7 +374,9 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "description": data.get("description") or "",
         "status": data.get("status") or "",
         "has_diagnosis": bool(
-            data.get("diagnosisCar") or data.get("has_diagnosis")
+            data.get("diagnosisCar")
+            or data.get("has_diagnosis")
+            or "엔카진단:Y" in (data.get("description") or "")
         ),
     }
 
@@ -557,21 +559,6 @@ def search_retail_db(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
-        # 가격 이상치 제외 (기본가/출고가 대비)
-        _price_mw = _normalize_price(retail_price)
-        _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
-        _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
-        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
-        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
-            continue
-        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
-            continue
-        # 하한: 가격 < 기본가/출고가의 30% → 비정상
-        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
-            continue
-        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
-            continue
-
         # 연식 범위
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -711,17 +698,6 @@ def search_auction_db(
         _price_mw = _normalize_price(price)
         _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
         _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
-        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
-        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
-            continue
-        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
-            continue
-        # 하한: 가격 < 기본가/출고가의 30% → 비정상
-        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
-            continue
-        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
-            continue
-
         # 연식 범위 (Firestore에서 문자열로 올 수 있으므로 int 변환)
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -1026,7 +1002,9 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "exterior_corrosion": damage_stats["exterior_corrosion"],
         "status": data.get("status") or "",
         "has_diagnosis": bool(
-            data.get("diagnosisCar") or data.get("has_diagnosis")
+            data.get("diagnosisCar")
+            or data.get("has_diagnosis")
+            or "엔카진단:Y" in (data.get("description") or "")
         ),
     }
 
@@ -1289,17 +1267,6 @@ def search_auction_by_tokens(
         _price_mw = _normalize_price(price)
         _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
         _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
-        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
-        if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
-            continue
-        if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
-            continue
-        # 하한: 가격 < 기본가/출고가의 30% → 비정상
-        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
-            continue
-        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
-            continue
-
         # 트림 (유연 매칭: 양방향 포함)
         if target_trim:
             v_trim_raw = (data.get("vehicleTrim") or "")

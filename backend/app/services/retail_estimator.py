@@ -566,19 +566,135 @@ def _smooth_ratio_estimate(
     return price, ratio, "smooth_regression"
 
 
+def _mileage_depreciation_rate(
+    vehicle_age: int, price_manwon: float, target_mileage: int = 0,
+) -> float:
+    """1만km당 감가율 (가격 대비 비율) — 비즈니스 기준.
+
+    - 2~3년: 2%
+    - 4~6년: 1.5%
+    - 7~9년: 1%
+    - 10년+, 2000만원 이상: 1%
+    - 10년+, 2000만원 미만: 10만원/1만km → 가격 대비 % 환산
+
+    고주행거리(15만km+)에서는 시장 수요 감소·위험 증가로 감가율 가속.
+    """
+    if vehicle_age <= 3:
+        base = 0.02
+    elif vehicle_age <= 6:
+        base = 0.015
+    elif vehicle_age <= 9:
+        base = 0.01
+    else:
+        if price_manwon >= 2000:
+            base = 0.01
+        else:
+            base = 10.0 / max(price_manwon, 100) if price_manwon > 0 else 0.01
+
+    # 고주행거리 가속 (시장 수요 급감·위험 증가)
+    if target_mileage > 200000:
+        base *= 2.5
+    elif target_mileage > 150000:
+        base *= 1.5
+    return base
+
+
+def _filter_gap_outliers(
+    vehicles: list[dict],
+    price_field: str = "소매가",
+    gap_pct: float = 0.05,
+) -> list[dict]:
+    """인접 가격 간 gap이 gap_pct 이상이면 양쪽 끝에서 제거 (계산용).
+
+    - 가장 낮은 가격 ↔ 그 다음 가격: gap ≥ 5% 이면 최저가 제외, 반복
+    - 가장 높은 가격 ↔ 그 아래 가격: gap ≥ 5% 이면 최고가 제외, 반복
+    - 원본 vehicle dict에 '_gap_excluded' 플래그 추가 (표시용)
+    - 계산에 사용할 차량 리스트만 반환
+    """
+    to_man_won = price_field == "낙찰가"
+
+    def _get_price(v: dict) -> float:
+        p = float(v.get(price_field, 0) or 0)
+        if to_man_won and p > 0:
+            p = _to_man_won(p)
+        return p
+
+    # 가격이 있는 차량만 대상
+    priced = [(i, _get_price(v)) for i, v in enumerate(vehicles) if _get_price(v) > 0]
+    if len(priced) < 3:
+        return vehicles  # 데이터 너무 적으면 필터 안함
+
+    # 가격 오름차순 정렬
+    priced.sort(key=lambda x: x[1])
+    excluded_indices: set[int] = set()
+
+    # 하단 gap 제거
+    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) >= 3:
+        active = [(i, p) for i, p in priced if i not in excluded_indices]
+        if len(active) < 3:
+            break
+        lowest_idx, lowest_p = active[0]
+        next_p = active[1][1]
+        if next_p > 0 and (next_p - lowest_p) / next_p >= gap_pct:
+            excluded_indices.add(lowest_idx)
+        else:
+            break
+
+    # 상단 gap 제거
+    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) >= 3:
+        active = [(i, p) for i, p in priced if i not in excluded_indices]
+        if len(active) < 3:
+            break
+        highest_idx, highest_p = active[-1]
+        prev_p = active[-2][1]
+        if prev_p > 0 and (highest_p - prev_p) / highest_p >= gap_pct:
+            excluded_indices.add(highest_idx)
+        else:
+            break
+
+    # 플래그 설정 + 계산용 리스트 반환
+    calc_vehicles = []
+    for i, v in enumerate(vehicles):
+        if i in excluded_indices:
+            v["_gap_excluded"] = True
+        else:
+            v.pop("_gap_excluded", None)
+            calc_vehicles.append(v)
+
+    if excluded_indices:
+        excluded_prices = [_get_price(vehicles[i]) for i in excluded_indices]
+        logger.info(
+            "gap 이상치 필터: %d건 제외 (가격: %s), 계산용 %d건",
+            len(excluded_indices),
+            [round(p, 1) for p in sorted(excluded_prices)],
+            len(calc_vehicles),
+        )
+
+    return calc_vehicles
+
+
 def _adaptive_bandwidth(data: list[tuple], target_mileage: int) -> int:
     """데이터 밀도에 따른 적응형 bandwidth.
 
     sqrt(n) 기반 최근접 이웃: 데이터가 많을수록 좁게, 적을수록 넓게.
+    데이터가 희소하거나 대상이 데이터 범위 경계에 있으면 대역폭 확대.
     """
     n = len(data)
     if n <= 3:
-        return 40000
+        return 80000
+    mileages = sorted(d[0] for d in data)
     distances = sorted(abs(d[0] - target_mileage) for d in data)
     k = min(max(int(math.sqrt(n)), 5), 25)  # sqrt(n), 5~25 범위
     k = min(k, n - 1)
     bw = max(distances[k], 10000)  # 최소 10,000km
-    return min(bw, 40000)  # 최대 40,000km
+
+    # 데이터 희소 또는 경계: 최소 3개 이상 유효 가중치(w>=0.1)를 보장
+    max_bw = 40000
+    if n <= 10:
+        max_bw = 80000  # 소량 데이터 → 넓은 대역폭
+    elif target_mileage >= mileages[-1] - 20000 or target_mileage <= mileages[0] + 20000:
+        max_bw = 60000  # 경계 근처 → 대역폭 확대
+    return min(bw, max_bw)
 
 
 def _smooth_price_estimate(
@@ -586,6 +702,7 @@ def _smooth_price_estimate(
     target_mileage: int,
     bandwidth: int = 0,
     conservative: bool = False,
+    vehicle_year: int = 0,
 ) -> tuple[float, str]:
     """
     Gaussian 가중 로컬 선형회귀로 가격 평활 추정.
@@ -695,10 +812,10 @@ def _smooth_price_estimate(
                     pred = a_intercept + b_slope * m
                     residuals_weights.append((p - pred, w))
 
-            # 3) 가중 하위 35% 잔차 평균
+            # 3) 가중 하위 25% 잔차 평균 (보수적: 저가 차량에 더 무게)
             residuals_weights.sort(key=lambda x: x[0])
             total_w = sum(w for _, w in residuals_weights)
-            target_w = total_w * 0.35
+            target_w = total_w * 0.25
             cum_w = 0.0
             lower_r_sum = 0.0
             lower_w_sum = 0.0
@@ -729,7 +846,29 @@ def _smooth_price_estimate(
             if price > eff_max:
                 price = eff_max
             elif price < eff_min:
-                price = eff_min
+                max_mileage_in_data = max(mileages)
+                min_mileage_in_data = min(mileages)
+                mileage_range = max_mileage_in_data - min_mileage_in_data
+                near_edge = target_mileage >= max_mileage_in_data - mileage_range * 0.15
+                if vehicle_year > 0:
+                    current_year = datetime.now().year
+                    age = current_year - vehicle_year
+                    rate = _mileage_depreciation_rate(age, eff_min, target_mileage)
+                    if target_mileage > max_mileage_in_data:
+                        # 완전 외삽: 비즈니스 기준 감가율로 eff_min에서 추가 하락
+                        extra_units = (target_mileage - max_mileage_in_data) / 10000
+                        extrap_price = eff_min * (1 - rate * extra_units)
+                        price = max(extrap_price, price, eff_min * 0.3)
+                    elif near_edge:
+                        # 데이터 경계 근처: 회귀 결과 신뢰, 비즈니스 기준 하한 적용
+                        data_span_units = max(mileage_range / 10000, 2)
+                        allowed_drop = eff_min * rate * data_span_units * 0.3
+                        price = max(price, eff_min - allowed_drop, eff_min * 0.3)
+                    else:
+                        price = eff_min
+                    print(f"  [감가외삽] eff_min={eff_min:.1f}, rate={rate:.3f}, max_km={max_mileage_in_data} → {price:.1f}")
+                else:
+                    price = eff_min
 
     # 디버그 로깅
     mode = "보수" if conservative else "소매"
@@ -948,6 +1087,7 @@ def _enforce_auction_floor(
 def _interpolate_ratio(
     target_mileage: int,
     sorted_brackets: list[MileageBracket],
+    vehicle_year: int = 0,
 ) -> tuple[float, str]:
     """
     비율 추이를 기반으로 대상 주행거리의 감가 비율 산출.
@@ -1031,6 +1171,17 @@ def _interpolate_ratio(
         if trend_at_nearest <= 0:
             trend_at_nearest = nearest.effective_ratio
         distance = target_mid_10k - nearest_mid_10k
+
+        # 비즈니스 기준 최소 기울기 적용 (고주행거리 외삽 시)
+        if vehicle_year > 0 and distance > 0:
+            current_year = datetime.now().year
+            age = current_year - vehicle_year
+            rate = _mileage_depreciation_rate(age, trend_at_nearest * 4000, target_mileage)
+            # 비율 기울기 최소값: rate × 현재 비율 (비율이 낮을수록 감가도 작아짐)
+            min_slope = -rate * trend_at_nearest
+            if slope > min_slope:  # slope은 음수, min_slope도 음수
+                slope = min_slope
+
         ratio = _dampened_extrapolation(trend_at_nearest, slope, distance)
         ratio = max(ratio, 0.05)
         return ratio, "ratio_trend_extrapolation"
@@ -1227,7 +1378,7 @@ def _moving_avg(
 
 def _dampened_extrapolation(base_value: float, slope: float, distance: float) -> float:
     """
-    지수 감쇠 외삽: 데이터 범위를 벗어나는 구간마다 기울기를 절반씩 감쇠.
+    거리 적응형 감쇠 외삽: 짧은 외삽은 빠른 감쇠, 긴 외삽은 추세 유지.
 
     base_value: 가장 가까운 구간의 값 (비율 또는 가격)
     slope: 만km당 기울기
@@ -1236,17 +1387,26 @@ def _dampened_extrapolation(base_value: float, slope: float, distance: float) ->
     if abs(distance) < 0.01:
         return base_value
 
-    # 1만km 단위로 감쇠 적용 (매 구간 기울기 × 0.5)
-    decay = 0.5
+    # 외삽 거리에 따라 감쇠율 조절
+    # - 짧은 거리: 빠른 감쇠 (과외삽 방지)
+    # - 긴 거리: 느린 감쇠 (추세 유지 → 비즈니스 기준에 부합)
+    abs_dist = abs(distance)
+    if abs_dist <= 5:
+        decay = 0.75
+    elif abs_dist <= 10:
+        decay = 0.85
+    else:
+        decay = 0.92
+
     result = base_value
-    remaining = abs(distance)
+    remaining = abs_dist
     current_slope = slope
 
     while remaining > 0:
         step = min(remaining, 1.0)  # 1만km씩 적용
         result += current_slope * step * (1 if distance > 0 else -1)
         remaining -= step
-        current_slope *= decay  # 다음 구간은 기울기 절반
+        current_slope *= decay
 
     return result
 
@@ -1497,22 +1657,12 @@ def estimate_retail_by_market(
         logger.info("소매가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (부족 시 연식 자동 확대)
-    vehicles = []
+    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (연식 확장 없음)
     year_range_used = f"{year}년"
-    for y_delta in (0, 1, 2, 3):
-        y_min = year - y_delta
-        y_max = year + y_delta
-        vehicles = search_retail_db(
-            model=model, maker=maker, trim=trim, fuel=fuel,
-            year_min=y_min, year_max=y_max, limit=500,
-        )
-        if y_delta == 0:
-            year_range_used = f"{year}년"
-        else:
-            year_range_used = f"{y_min}~{y_max}년"
-        if len(vehicles) >= MIN_TOTAL_VEHICLES:
-            break
+    vehicles = search_retail_db(
+        model=model, maker=maker, trim=trim, fuel=fuel,
+        year_min=year, year_max=year, limit=500,
+    )
     result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
@@ -1550,9 +1700,12 @@ def estimate_retail_by_market(
             result.reference_price_used = tgt_ref_price
             result.reference_price_label = tgt_ref_label
 
+    # 1.9단계: gap 기반 이상치 필터 (계산용만 — 표시는 전체)
+    calc_vehicles = _filter_gap_outliers(vehicles, price_field="소매가")
+
     # 2단계: 구간별 비율 산출 (구간에 포함된 차량만 수집)
     used_vehicles: list[dict] = []
-    bracket_map = _build_brackets(vehicles, tgt_ref_price, used_vehicles=used_vehicles)
+    bracket_map = _build_brackets(calc_vehicles, tgt_ref_price, used_vehicles=used_vehicles)
 
     # 낙찰가 bracket을 바닥으로 소매 bracket 보정
     if auction_brackets:
@@ -1568,7 +1721,7 @@ def estimate_retail_by_market(
 
     # 3단계: 구간별 비율 추이 기반 추정 (bracket ratio interpolation)
     if tgt_ref_price > 0:
-        ratio, method = _interpolate_ratio(mileage, sorted_brackets)
+        ratio, method = _interpolate_ratio(mileage, sorted_brackets, vehicle_year=year)
         if ratio > 0:
             est_price = round(ratio * tgt_ref_price, 1)
             result.estimated_retail = est_price
@@ -1747,23 +1900,13 @@ def estimate_auction_by_market(
         logger.info("낙찰가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (부족 시 연식 자동 확대)
-    vehicles = []
+    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (연식 확장 없음)
     year_range_used = f"{year}년"
-    for y_delta in (0, 1, 2, 3):
-        y_min = year - y_delta
-        y_max = year + y_delta
-        vehicles = search_auction_db(
-            model=model, maker=maker, trim=trim, fuel=fuel,
-            year_min=y_min, year_max=y_max, limit=500,
-            domestic_only=True,
-        )
-        if y_delta == 0:
-            year_range_used = f"{year}년"
-        else:
-            year_range_used = f"{y_min}~{y_max}년"
-        if len(vehicles) >= MIN_TOTAL_VEHICLES:
-            break
+    vehicles = search_auction_db(
+        model=model, maker=maker, trim=trim, fuel=fuel,
+        year_min=year, year_max=year, limit=500,
+        domestic_only=True,
+    )
     result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
@@ -1798,8 +1941,11 @@ def estimate_auction_by_market(
             result.reference_price_used = tgt_ref_price
             result.reference_price_label = tgt_ref_label
 
+    # gap 기반 이상치 필터 (계산용만 — 표시는 전체)
+    calc_vehicles = _filter_gap_outliers(vehicles, price_field="낙찰가")
+
     # 2단계: 구간별 비율 산출 (평균 기반)
-    bracket_map = _build_auction_brackets(vehicles, tgt_ref_price)
+    bracket_map = _build_auction_brackets(calc_vehicles, tgt_ref_price)
     sorted_brackets = sorted(bracket_map.values(), key=lambda x: x.bracket_start)
     result.brackets = sorted_brackets
 
@@ -1809,9 +1955,9 @@ def estimate_auction_by_market(
         return result
 
     # 3단계: 연속 평활 추정 (보수적: 저가 차량 가중 + 연식 정규화)
-    vehicle_class = _determine_vehicle_class(vehicles)
+    vehicle_class = _determine_vehicle_class(calc_vehicles)
     price_data = _normalize_vehicles_price_only(
-        vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
+        calc_vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
         target_year=year,
     )
 
@@ -1830,7 +1976,7 @@ def estimate_auction_by_market(
             )
 
         est_price, method = _smooth_price_estimate(
-            price_data, mileage, conservative=True,
+            price_data, mileage, conservative=True, vehicle_year=year,
         )
         if est_price > 0:
             # 사후 보정
@@ -1957,23 +2103,13 @@ def estimate_export_auction_by_market(
         result.details = "트림 정보 없음 — 수출 낙찰가 추정 불가"
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료 수출만 (부족 시 연식 자동 확대)
-    vehicles = []
+    # 같은 트림 + 같은 연식 + 같은 연료 수출만 (연식 확장 없음)
     year_range_used = f"{year}년"
-    for y_delta in (0, 1, 2, 3):
-        y_min = year - y_delta
-        y_max = year + y_delta
-        vehicles = search_auction_db(
-            model=model, maker=maker, trim=trim, fuel=fuel,
-            year_min=y_min, year_max=y_max, limit=500,
-            domestic_only=False, export_only=True,
-        )
-        if y_delta == 0:
-            year_range_used = f"{year}년"
-        else:
-            year_range_used = f"{y_min}~{y_max}년"
-        if len(vehicles) >= MIN_TOTAL_VEHICLES:
-            break
+    vehicles = search_auction_db(
+        model=model, maker=maker, trim=trim, fuel=fuel,
+        year_min=year, year_max=year, limit=500,
+        domestic_only=False, export_only=True,
+    )
     result.year_range_used = year_range_used
 
     result.vehicles_found = len(vehicles)
@@ -2008,8 +2144,11 @@ def estimate_export_auction_by_market(
             result.reference_price_used = tgt_ref_price
             result.reference_price_label = tgt_ref_label
 
+    # gap 기반 이상치 필터 (계산용만 — 표시는 전체)
+    calc_vehicles = _filter_gap_outliers(vehicles, price_field="낙찰가")
+
     # 2단계: 구간별 비율 산출
-    bracket_map = _build_auction_brackets(vehicles, tgt_ref_price)
+    bracket_map = _build_auction_brackets(calc_vehicles, tgt_ref_price)
     sorted_brackets = sorted(bracket_map.values(), key=lambda x: x.bracket_start)
     result.brackets = sorted_brackets
 
@@ -2019,9 +2158,9 @@ def estimate_export_auction_by_market(
         return result
 
     # 3단계: 연속 평활 추정 (보수적: 저가 차량 가중 + 연식 정규화)
-    vehicle_class = _determine_vehicle_class(vehicles)
+    vehicle_class = _determine_vehicle_class(calc_vehicles)
     price_data = _normalize_vehicles_price_only(
-        vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
+        calc_vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
         target_year=year,
     )
 
@@ -2040,7 +2179,7 @@ def estimate_export_auction_by_market(
             )
 
         est_price, method = _smooth_price_estimate(
-            price_data, mileage, conservative=True,
+            price_data, mileage, conservative=True, vehicle_year=year,
         )
         if est_price > 0:
             # 사후 보정
@@ -2127,6 +2266,7 @@ def estimate_export_auction_by_market(
 def _interpolate_auction_ratio(
     target_mileage: int,
     sorted_brackets: list[MileageBracket],
+    vehicle_year: int = 0,
 ) -> tuple[float, str]:
     """낙찰가 비율 보간 (직접 구간은 추세선과 평균하여 안정화)."""
     usable = [b for b in sorted_brackets if b.effective_ratio > 0]
@@ -2191,8 +2331,8 @@ def _interpolate_auction_ratio(
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
         distance = target_mid_10k - nearest_mid_10k
-        # 외삽 거리 5만km 초과 시 신뢰도 부족 → 포기
-        if abs(distance) > 5.0:
+        # 외삽 거리 10만km 초과 시 신뢰도 부족 → 포기
+        if abs(distance) > 10.0:
             return 0, "no_data"
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.effective_ratio for b in usable]
@@ -2201,6 +2341,14 @@ def _interpolate_auction_ratio(
         trend_at_nearest = y_mean + slope * (nearest_mid_10k - x_mean)
         if trend_at_nearest <= 0:
             trend_at_nearest = nearest.effective_ratio
+        # 비즈니스 기준 최소 기울기 적용
+        if vehicle_year > 0 and distance > 0:
+            current_year = datetime.now().year
+            age = current_year - vehicle_year
+            rate = _mileage_depreciation_rate(age, trend_at_nearest * 4000, target_mileage)
+            min_slope = -rate * trend_at_nearest
+            if slope > min_slope:
+                slope = min_slope
         ratio = _dampened_extrapolation(trend_at_nearest, slope, distance)
         return max(ratio, 0.05), "ratio_trend_extrapolation"
 
@@ -2272,8 +2420,8 @@ def _interpolate_auction_price(
         nearest_mid_10k = (nearest.bracket_start + 5000) / 10000
         target_mid_10k = target_mid / 10000
         distance = target_mid_10k - nearest_mid_10k
-        # 외삽 거리 5만km 초과 시 신뢰도 부족 → 포기
-        if abs(distance) > 5.0:
+        # 외삽 거리 10만km 초과 시 신뢰도 부족 → 포기
+        if abs(distance) > 10.0:
             return 0, "no_data"
         xs = [(b.bracket_start + 5000) / 10000 for b in usable]
         ys = [b.median_price for b in usable]

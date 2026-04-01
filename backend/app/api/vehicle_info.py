@@ -145,16 +145,12 @@ async def search_auction_endpoint(
         company_id=company_id,
         domestic_only=False,
     )
-    # 한글키 → 영문키 변환 (차명 + 트림 결합)
+    # 한글키 → 영문키 변환
     mapped = []
     for r in results:
-        name = r.get("차명", "")
-        trim_val = r.get("trim", "")
-        if trim_val and trim_val not in name:
-            name = f"{name} {trim_val}".strip()
         mapped.append({
             "auction_id": r.get("auction_id", ""),
-            "vehicle_name": name,
+            "vehicle_name": r.get("차명", ""),
             "year": r.get("연식"),
             "mileage": r.get("주행거리"),
             "auction_price": r.get("낙찰가"),
