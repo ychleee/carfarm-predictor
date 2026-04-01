@@ -557,13 +557,19 @@ def search_retail_db(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
-        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        # 가격 이상치 제외 (기본가/출고가 대비)
         _price_mw = _normalize_price(retail_price)
         _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
         _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
         if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
             continue
         if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
+            continue
+        # 하한: 가격 < 기본가/출고가의 30% → 비정상
+        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
+            continue
+        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
             continue
 
         # 연식 범위
@@ -701,13 +707,19 @@ def search_auction_db(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
-        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        # 가격 이상치 제외 (기본가/출고가 대비)
         _price_mw = _normalize_price(price)
         _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
         _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
         if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
             continue
         if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
+            continue
+        # 하한: 가격 < 기본가/출고가의 30% → 비정상
+        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
+            continue
+        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
             continue
 
         # 연식 범위 (Firestore에서 문자열로 올 수 있으므로 int 변환)
@@ -1273,13 +1285,19 @@ def search_auction_by_tokens(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
-        # 가격 ≥ 기본가/출고가의 90% → 비정상 데이터 제외
+        # 가격 이상치 제외 (기본가/출고가 대비)
         _price_mw = _normalize_price(price)
         _base_mw = _normalize_price(raw_base) if raw_base > 0 else 0
         _factory_mw = _normalize_price(raw_factory) if raw_factory > 0 else 0
+        # 상한: 가격 ≥ 기본가/출고가의 90% → 비정상
         if _base_mw > 0 and _price_mw >= _base_mw * 0.9:
             continue
         if _factory_mw > 0 and _price_mw >= _factory_mw * 0.9:
+            continue
+        # 하한: 가격 < 기본가/출고가의 30% → 비정상
+        if _base_mw > 0 and _price_mw < _base_mw * 0.3:
+            continue
+        if _factory_mw > 0 and _price_mw < _factory_mw * 0.3:
             continue
 
         # 트림 (유연 매칭: 양방향 포함)

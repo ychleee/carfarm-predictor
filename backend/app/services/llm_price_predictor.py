@@ -638,6 +638,78 @@ def _parse_prediction(text: str) -> dict:
     return json.loads(text)
 
 
+def _get_domestic_ratio_at_mileage(
+    mileage: int,
+    brackets: list,
+) -> float:
+    """내수 bracket에서 해당 주행거리의 effective_ratio를 보간하여 반환."""
+    if not brackets:
+        return 0.0
+    bucket_km = (mileage // 10000) * 10000
+    # 정확히 일치하는 bracket 찾기
+    for b in brackets:
+        if b.bracket_start <= bucket_km < b.bracket_end:
+            return b.effective_ratio
+    # 범위 밖이면 가장 가까운 bracket
+    if bucket_km < brackets[0].bracket_start:
+        return brackets[0].effective_ratio
+    return brackets[-1].effective_ratio
+
+
+def _estimate_export_from_domestic(
+    export_vehicles: list[dict],
+    domestic_brackets: list,
+    target_mileage: int,
+    export_details: str,
+    domestic_estimate: float,
+) -> tuple[float, str]:
+    """
+    수출 데이터 부족 시, 내수 bracket 비율로 주행거리 보정하여 수출가 추정.
+
+    각 수출 차량의 가격을 내수 bracket 비율로 대상 주행거리에 맞게 환산한 뒤
+    평균을 반환.
+    """
+    target_domestic_ratio = _get_domestic_ratio_at_mileage(
+        target_mileage, domestic_brackets,
+    )
+    if target_domestic_ratio <= 0:
+        return 0, ""
+
+    estimates = []
+    detail_lines = []
+    for ev in export_vehicles:
+        ev_mileage = int(ev.get("주행거리", 0) or 0)
+        ev_price = _to_man_won(float(ev.get("낙찰가", 0) or 0))
+        if ev_price <= 0 or ev_mileage <= 0:
+            continue
+        ev_domestic_ratio = _get_domestic_ratio_at_mileage(
+            ev_mileage, domestic_brackets,
+        )
+        if ev_domestic_ratio <= 0:
+            continue
+        # 주행거리 보정: 수출가 × (대상 내수비율 / 수출차량 내수비율)
+        scale = target_domestic_ratio / ev_domestic_ratio
+        adjusted = ev_price * scale
+        estimates.append(adjusted)
+        detail_lines.append(
+            f"  수출차량 {ev_mileage:,}km {ev_price:,.0f}만 "
+            f"× 내수비율({target_domestic_ratio*100:.1f}%/{ev_domestic_ratio*100:.1f}%) "
+            f"= {adjusted:,.0f}만"
+        )
+
+    if not estimates:
+        return 0, ""
+
+    avg_price = round(sum(estimates) / len(estimates))
+    reasoning = (
+        f"[수출 데이터 부족 — 내수 비율 보정] {export_details}\n"
+        f"내수 주행거리별 감가 비율을 적용하여 대상 {target_mileage:,}km 기준으로 환산:\n"
+        + "\n".join(detail_lines)
+        + f"\n= 추정 수출 낙찰가: {avg_price:,}만원"
+    )
+    return avg_price, reasoning
+
+
 def _compact_auction_vehicle(v: dict) -> dict:
     """낙찰 유사차량 → compact dict (Firestore 용량 절약)"""
     sale_date = v.get("개최일", "")
@@ -833,6 +905,7 @@ def predict_price(
         factory_price=target.get("factory_price", 0) or 0,
         base_price=target.get("base_price", 0) or 0,
         fuel=target_fuel,
+        auction_brackets=market_auction_result.brackets if market_auction_result.success else None,
     )
 
     if market_retail_result.success:
@@ -858,12 +931,34 @@ def predict_price(
         export_price = market_export_result.estimated_auction
         export_reasoning_final = f"[시장 데이터] {market_export_result.details}"
     else:
-        # 수출 데이터 부족 시 LLM 폴백
-        export_price = parsed.get("estimated_auction_export", 0) or 0
-        export_reasoning_final = (
-            f"[수출 시장 데이터 부족 — LLM 폴백] {market_export_result.details}\n"
-            f"{export_reasoning}"
+        # 수출 데이터 부족 시: 내수 bracket 비율로 주행거리 보정 시도
+        export_price = 0
+        export_reasoning_final = ""
+        target_mileage = target.get("mileage", 0)
+
+        export_vehicles = market_export_result.vehicles or []
+        domestic_brackets = (
+            sorted(market_auction_result.brackets, key=lambda b: b.bracket_start)
+            if market_auction_result.success and market_auction_result.brackets
+            else []
         )
+
+        if export_vehicles and domestic_brackets:
+            export_price, export_reasoning_final = _estimate_export_from_domestic(
+                export_vehicles=export_vehicles,
+                domestic_brackets=domestic_brackets,
+                target_mileage=target_mileage,
+                export_details=market_export_result.details,
+                domestic_estimate=market_auction_result.estimated_auction,
+            )
+
+        if export_price <= 0:
+            # 내수 보정도 불가 → LLM 폴백
+            export_price = parsed.get("estimated_auction_export", 0) or 0
+            export_reasoning_final = (
+                f"[수출 시장 데이터 부족 — LLM 폴백] {market_export_result.details}\n"
+                f"{export_reasoning}"
+            )
 
     # ── 캘리브레이션 보정 reasoning ──
     for _result, _label in [

@@ -896,6 +896,55 @@ def _smooth_cross_bin_outliers(brackets: dict[int, "MileageBracket"]) -> None:
             b.smoothed = True
 
 
+def _enforce_auction_floor(
+    retail_brackets: dict[int, MileageBracket],
+    auction_brackets: list[MileageBracket],
+) -> None:
+    """
+    소매 bracket의 effective_ratio가 낙찰가 bracket보다 낮으면 보정.
+
+    낙찰가는 실거래가이므로 소매가(호가)보다 낮아야 정상.
+    소매 비율 < 낙찰 비율인 구간은 비정상이므로,
+    다른 구간의 소매/낙찰 프리미엄 비율을 적용하여 보정.
+    """
+    # 낙찰 bracket을 key로 매핑
+    auction_map: dict[int, float] = {}
+    for ab in auction_brackets:
+        if ab.effective_ratio > 0:
+            auction_map[ab.bracket_start] = ab.effective_ratio
+
+    if not auction_map:
+        return
+
+    # 정상 구간에서 소매/낙찰 프리미엄 비율 수집
+    premiums: list[float] = []
+    for key, rb in retail_brackets.items():
+        ar = auction_map.get(key, 0)
+        if ar > 0 and rb.effective_ratio > ar:
+            premiums.append(rb.effective_ratio / ar)
+
+    # 프리미엄 중앙값 (정상 구간이 없으면 1.15 기본값)
+    if premiums:
+        median_premium = statistics.median(premiums)
+    else:
+        median_premium = 1.15
+
+    # 소매 < 낙찰인 구간 보정
+    for key, rb in retail_brackets.items():
+        ar = auction_map.get(key, 0)
+        if ar <= 0:
+            continue
+        floor = ar * median_premium
+        if rb.effective_ratio < ar:
+            # 낙찰 비율보다 낮음 → 프리미엄 적용
+            rb.effective_ratio = floor
+            rb.smoothed = True
+        elif rb.effective_ratio < floor * 0.95:
+            # 낙찰 비율보다 높지만 프리미엄 기대치의 95% 미만 → 부분 보정
+            rb.effective_ratio = (rb.effective_ratio + floor) / 2
+            rb.smoothed = True
+
+
 def _interpolate_ratio(
     target_mileage: int,
     sorted_brackets: list[MileageBracket],
@@ -1413,6 +1462,7 @@ def estimate_retail_by_market(
     factory_price: float = 0,
     base_price: float = 0,
     fuel: str = "",
+    auction_brackets: list["MileageBracket"] | None = None,
 ) -> RetailEstimateResult:
     """
     시장 데이터 기반 소매가 추정 (비율 추이 방식).
@@ -1503,6 +1553,11 @@ def estimate_retail_by_market(
     # 2단계: 구간별 비율 산출 (구간에 포함된 차량만 수집)
     used_vehicles: list[dict] = []
     bracket_map = _build_brackets(vehicles, tgt_ref_price, used_vehicles=used_vehicles)
+
+    # 낙찰가 bracket을 바닥으로 소매 bracket 보정
+    if auction_brackets:
+        _enforce_auction_floor(bracket_map, auction_brackets)
+
     sorted_brackets = sorted(bracket_map.values(), key=lambda x: x.bracket_start)
     result.brackets = sorted_brackets
 
