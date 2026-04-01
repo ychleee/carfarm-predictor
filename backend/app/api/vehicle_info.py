@@ -174,7 +174,7 @@ async def search_auction_endpoint(
             "exterior_corrosion": r.get("exterior_corrosion", 0),
             "company_id": r.get("company_id", ""),
             "is_export": bool(r.get("is_export", 0)),
-            "has_encar_diagnosis": False,
+            "has_encar_diagnosis": bool(r.get("has_diagnosis")),
             "status": r.get("status", ""),
         })
 
