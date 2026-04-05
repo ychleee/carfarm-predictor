@@ -24,6 +24,11 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def _round10(value: float) -> float:
+    """10만원 단위 반올림 (예: 1055.2 → 1060, 938.5 → 940)"""
+    return round(value / 10) * 10
+
+
 # =========================================================================
 # 데이터 모델
 # =========================================================================
@@ -168,10 +173,35 @@ def _resolve_target_ref_price(
     """
     대상차량 출고가/기본가를 확보하는 폴백 로직.
 
-    1순위: DB에서 같은 maker+model 출고가 조회
-    2순위: 같은 트림 기준차량 출고가 중앙값
+    1순위: 기준차량의 출고가 최빈값 (서브모델 혼재 시 가장 대표적인 값)
+    2순위: DB에서 같은 maker+model 출고가 조회
     """
-    # 1순위: DB 조회
+    # 1순위: 기준차량 출고가 최빈값 — 서브모델 혼재 시 가장 대표적인 출고가 사용
+    fp_values = [float(v.get("factory_price", 0) or 0) for v in vehicles if float(v.get("factory_price", 0) or 0) > 0]
+    if fp_values:
+        # 50만원 단위로 그룹핑하여 최빈 그룹 결정
+        grouped: dict[int, list[float]] = {}
+        for fp in fp_values:
+            key = round(fp / 50) * 50
+            grouped.setdefault(key, []).append(fp)
+        # 최빈 그룹 (동률 시 가장 낮은 출고가 그룹 — 기본형에 가까움)
+        best_key = max(grouped.keys(), key=lambda k: (len(grouped[k]), -k))
+        best_group = grouped[best_key]
+        result = statistics.median(best_group)
+        logger.info(
+            "대상 출고가 최빈값: %.0f만원 (그룹 %d만원대, %d건/%d건)",
+            result, best_key, len(best_group), len(fp_values),
+        )
+        return result, "출고가"
+
+    # 2순위: 기준차량 기본가 포함 중앙값
+    ref_prices = [_pick_ref_price(v)[0] for v in vehicles if _pick_ref_price(v)[0] > 0]
+    if ref_prices:
+        median_price = statistics.median(ref_prices)
+        logger.info("대상 출고가 기준차량 중앙값: %.0f만원 (%d건)", median_price, len(ref_prices))
+        return median_price, "출고가"
+
+    # 3순위: DB 조회 (기준차량이 전혀 없을 때)
     try:
         from app.services.firestore_db import get_firestore_db, _lookup_factory_price
         db = get_firestore_db()
@@ -187,13 +217,6 @@ def _resolve_target_ref_price(
                 return bp, "기본가"
     except Exception as e:
         logger.warning("출고가 DB 조회 실패: %s", e)
-
-    # 2순위: 기준차량 중앙값
-    ref_prices = [_pick_ref_price(v)[0] for v in vehicles if _pick_ref_price(v)[0] > 0]
-    if ref_prices:
-        median_price = statistics.median(ref_prices)
-        logger.info("대상 출고가 기준차량 중앙값: %.0f만원 (%d건)", median_price, len(ref_prices))
-        return median_price, "출고가"
 
     return 0.0, ""
 
@@ -428,10 +451,12 @@ def _normalize_vehicles_price_only(
             v_price -= color_pen
 
         # 출고가 정규화: 차량 출고가가 대상과 다르면 스케일링
-        # (base_price만 있는 차량은 스케일링 불안정 → factory_price 있는 차량만)
+        # fp=0 차량은 서브모델 불확실 → 스케일링 불가 → 제외
         if tgt_ref_price > 0:
             v_fp = float(v.get("factory_price", 0) or 0)
-            if v_fp > 0 and abs(v_fp - tgt_ref_price) / tgt_ref_price > 0.03:
+            if v_fp <= 0:
+                continue  # fp 없는 차량은 정규화 불가 → 평활 추정에서 제외
+            elif abs(v_fp - tgt_ref_price) / tgt_ref_price > 0.03:
                 v_price = v_price * (tgt_ref_price / v_fp)
 
         if v_price <= 0:
@@ -600,9 +625,9 @@ def _mileage_depreciation_rate(
         else:
             base = 10.0 / max(price_manwon, 100) if price_manwon > 0 else 0.01
 
-    # 고주행거리 가속 (시장 수요 급감·위험 증가)
+    # 고주행거리 가속 (시장 수요 감소·위험 증가)
     if target_mileage > 200000:
-        base *= 2.5
+        base *= 1.8
     elif target_mileage > 150000:
         base *= 1.5
     return base
@@ -989,6 +1014,7 @@ def _smooth_price_estimate(
     bandwidth: int = 0,
     conservative: bool = False,
     vehicle_year: int = 0,
+    conservative_pct: float = 0,
 ) -> tuple[float, str]:
     """
     Gaussian 가중 로컬 선형회귀로 가격 평활 추정.
@@ -1100,10 +1126,14 @@ def _smooth_price_estimate(
                     residuals_weights.append((p - pred, w))
 
             # 3) 가중 하위 잔차 평균 (보수적: 저가 차량에 더 무게)
-            #    10년 이내: 하위 15%, 그 외: 하위 25%
+            #    기본: 10년 이내 하위 15%, 그 외 하위 25%
+            #    auction(conservative_pct 지정 시) 해당 값 사용
             current_year = datetime.now().year
             age = current_year - vehicle_year if vehicle_year > 0 else 99
-            conservative_pct = 0.15 if age <= 10 else 0.25
+            if conservative_pct > 0:
+                pass  # 호출자가 지정한 값 사용
+            else:
+                conservative_pct = 0.15 if age <= 10 else 0.25
             residuals_weights.sort(key=lambda x: x[0])
             total_w = sum(w for _, w in residuals_weights)
             target_w = total_w * conservative_pct
@@ -1135,24 +1165,27 @@ def _smooth_price_estimate(
             else:
                 b_slope = (n * wxy - wx * wy) / denom
                 a_intercept = (wy - b_slope * wx) / n
-            # eff_min을 기준으로 비즈니스 룰 외삽
+            # 회귀 경계값 또는 eff_min 중 높은 값을 기준으로 비즈니스 룰 외삽
             eff_min = min(prices)
             max_mileage_in_data = max(mileages)
+            reg_at_boundary = a_intercept + b_slope * float(max_mileage_in_data)
+            # 회귀 경계값이 실제 최저가보다 높으면 채택 (더 대표적인 시작점)
+            start_price = max(reg_at_boundary, eff_min)
             rate = 0.0
             if vehicle_year > 0 and target_mileage > max_mileage_in_data:
                 current_year = datetime.now().year
                 age = current_year - vehicle_year
-                rate = _mileage_depreciation_rate(age, eff_min, target_mileage)
+                rate = _mileage_depreciation_rate(age, start_price, target_mileage)
                 # 원거리 외삽: 25만km+ 추가 가속 (bracket 보간 영향 없이 여기서만 적용)
                 if target_mileage > 250000:
-                    rate *= 1.12
+                    rate *= 1.30
                 extra_units = (target_mileage - max_mileage_in_data) / 10000
-                extrap_price = eff_min * (1 - rate * extra_units)
-                price = max(extrap_price, eff_min * 0.3)
+                extrap_price = start_price * (1 - rate * extra_units)
+                price = max(extrap_price, start_price * 0.3)
             else:
                 price = max(a_intercept + b_slope * float(target_mileage), eff_min * 0.3)
             far_range = True
-            print(f"  [원거리외삽] eff_min={eff_min:.1f}, max_km={max_mileage_in_data}, rate={rate:.3f} → {price:.1f}")
+            print(f"  [원거리외삽] start={start_price:.1f}(eff_min={eff_min:.1f}, reg@bnd={reg_at_boundary:.1f}), max_km={max_mileage_in_data}, rate={rate:.3f} → {price:.1f}")
     else:
         price = _weighted_local_regression(
             [float(m) for m in mileages], prices, weights, float(target_mileage),
@@ -1266,18 +1299,18 @@ def _build_brackets(
         b.prices.append(v_retail_aa)
         b.mileages.append(v_mileage)
 
-        # 비율 계산: 차량 자체 출고가 기준 (다른 가격대 차량 혼재 시 정확도 향상)
+        # 비율 계산: 차량 자체 출고가 기준만 사용
+        # fp=0 차량은 다른 서브모델일 수 있어 비율 계산에서 제외
         v_fp = float(v.get("factory_price", 0) or 0)
-        ratio_ref = v_fp if v_fp > 0 else (tgt_ref_price if tgt_ref_price > 0 else ref_price)
-        if ratio_ref > 0:
-            ratio = v_retail_aa / ratio_ref
+        if v_fp > 0:
+            ratio = v_retail_aa / v_fp
             if ratio < 1.0:  # 비율 >= 100% 는 비정상 데이터 제외
                 b.ratios.append(ratio)
                 if _is_clean_vehicle(v):
                     clean_ratios_map[key].append(ratio)
 
     # 이상치 필터링 + effective_ratio 결정
-    # 10년 이내: 항상 하위 30%, 그 외: CV 기반 조건부
+    # 10년 이내: 항상 하위 20%, 그 외: CV 기반 조건부
     current_year = datetime.now().year
     age = current_year - target_year if target_year > 0 else 99
     force_lower = age <= 10
@@ -2094,26 +2127,39 @@ def estimate_retail_by_market(
                 price_data, mileage, conservative=True, vehicle_year=year,
             )
 
-        # blend: 비율 보간과 평활 가격의 평균 (둘 다 유효할 때)
+        # blend: 비율 보간과 평활 가격 (둘 다 유효할 때)
+        # 서브모델 혼재(fp CV > 10%) 시 smooth에 가중치 증가 (fp 정규화 반영)
         # 단, 원거리 외삽(far_range)은 bracket 보간보다 신뢰도 낮으므로 blend 제외
         if ratio_price > 0 and smooth_price > 0 and smooth_method != "smooth_price_far_range":
-            est_price = round((ratio_price + smooth_price) / 2, 1)
+            # fp 변동 계수로 서브모델 혼재 정도 측정
+            fp_values = [float(v.get("factory_price", 0) or 0) for v in calc_vehicles if float(v.get("factory_price", 0) or 0) > 0]
+            fp_cv = (statistics.stdev(fp_values) / statistics.mean(fp_values)) if len(fp_values) >= 2 and statistics.mean(fp_values) > 0 else 0
+            divergence = abs(ratio_price - smooth_price) / smooth_price if smooth_price > 0 else 0
+            if fp_cv > 0.05 and divergence > 0.15:
+                # 서브모델 혼재 + 큰 괴리 → smooth만 사용 (fp 정규화 반영)
+                ratio_w, smooth_w = 0.0, 1.0
+            elif fp_cv > 0.05:
+                # 서브모델 혼재 → smooth 가중 (30:70)
+                ratio_w, smooth_w = 0.30, 0.70
+            else:
+                ratio_w, smooth_w = 0.50, 0.50
+            est_price = _round10(ratio_price * ratio_w + smooth_price * smooth_w)
             result.estimated_retail = est_price
             result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
             result.method = f"{method}+smooth_blend"
             result.success = True
             logger.info(
-                "소매 blend: ratio_price=%.1f, smooth_price=%.1f → %.1f",
-                ratio_price, smooth_price, est_price,
+                "소매 blend: ratio=%.1f, smooth=%.1f, fp_cv=%.3f, div=%.3f, w=%.0f:%.0f → %d",
+                ratio_price, smooth_price, fp_cv, divergence, ratio_w * 100, smooth_w * 100, est_price,
             )
         elif ratio_price > 0:
-            est_price = ratio_price
+            est_price = _round10(ratio_price)
             result.estimated_retail = est_price
             result.estimated_ratio = round(ratio * 100, 1)
             result.method = method
             result.success = True
         elif smooth_price > 0:
-            result.estimated_retail = round(smooth_price, 1)
+            result.estimated_retail = _round10(smooth_price)
             result.estimated_ratio = round(smooth_price / tgt_ref_price * 100, 1)
             result.method = "smooth_price_regression"
             result.success = True
@@ -2121,7 +2167,7 @@ def estimate_retail_by_market(
         # 출고가 없으면 가격 추이로 직접 추정
         est_price, method = _interpolate_price(mileage, sorted_brackets)
         if est_price > 0:
-            result.estimated_retail = est_price
+            result.estimated_retail = _round10(est_price)
             result.method = method
             result.success = True
 
@@ -2208,11 +2254,11 @@ def _build_auction_brackets(
         b.prices.append(v_auction_aa)
         b.mileages.append(v_mileage)
 
-        # 비율 계산: 차량 자체 출고가 기준 (다른 가격대 차량 혼재 시 정확도 향상)
+        # 비율 계산: 차량 자체 출고가 기준만 사용
+        # fp=0 차량은 다른 서브모델일 수 있어 비율 계산에서 제외
         v_fp = float(v.get("factory_price", 0) or 0)
-        ratio_ref = v_fp if v_fp > 0 else (tgt_ref_price if tgt_ref_price > 0 else ref_price)
-        if ratio_ref > 0:
-            ratio = v_auction_aa / ratio_ref
+        if v_fp > 0:
+            ratio = v_auction_aa / v_fp
             if ratio < 1.0:  # 비율 >= 100% 는 비정상 데이터 제외
                 b.ratios.append(ratio)
                 if _is_clean_vehicle(v):
@@ -2357,45 +2403,73 @@ def estimate_auction_by_market(
         result.details = "유효 구간 생성 실패"
         return result
 
-    # 3단계: 연속 평활 추정 (보수적: 저가 차량 가중 + 연식 정규화)
+    # 3단계: 구간별 비율 추이 + 평활 가격 추정 (소매와 동일 blend 구조)
+    # 3-1) bracket 기반 비율 보간
+    ratio_price = 0.0
+    ratio_method = ""
+    if tgt_ref_price > 0:
+        ratio, ratio_method = _interpolate_auction_ratio(mileage, sorted_brackets, vehicle_year=year)
+        ratio_price = round(ratio * tgt_ref_price, 1) if ratio > 0 else 0
+
+    # 3-2) 평활 가격 추정
     vehicle_class = _determine_vehicle_class(calc_vehicles)
     price_data = _normalize_vehicles_price_only(
         calc_vehicles, vehicle_class, price_field="낙찰가", full_normalize=False,
         target_year=year, tgt_ref_price=tgt_ref_price,
     )
 
+    smooth_price = 0.0
+    smooth_method = ""
+    # 경매: 하위 10%(≤10yr) / 20%(>10yr) — 소매보다 보수적
+    current_year = datetime.now().year
+    auction_age = current_year - year if year > 0 else 99
+    auction_pct = 0.10 if auction_age <= 10 else 0.20
     if price_data:
-        price_data = _filter_local_outliers(price_data)
-        from app.services.calibration_engine import compute_blended_params
-        blended = compute_blended_params(
-            price_data, mileage, maker, model, trim, year,
-            price_type="auction", conservative=True,
-        )
-        result.blended_params = blended
-
-        # 사전 필터
-        if blended.exclusion_pct > 0 and blended.direction != "none":
-            price_data, result.feedback_excluded = _apply_feedback_filter(
-                price_data, blended.exclusion_pct, blended.direction,
-            )
-
-        est_price, method = _smooth_price_estimate(
+        smooth_price, smooth_method = _smooth_price_estimate(
             price_data, mileage, conservative=True, vehicle_year=year,
+            conservative_pct=auction_pct,
         )
-        if est_price > 0:
-            # 사후 보정
-            if _needs_learned_correction(blended.scale_factor, blended.price_bias, blended.mileage_slope):
-                est_price = _apply_learned_correction(
-                    est_price, mileage,
-                    blended.scale_factor, blended.price_bias,
-                    blended.mileage_slope, blended.ref_mileage,
-                )
-                result.learned_correction_applied = True
-            result.estimated_auction = est_price
-            if tgt_ref_price > 0:
-                result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
-            result.method = method
-            result.success = True
+
+    # 3-3) blend: 서브모델 혼재(fp CV > 5%) 시 smooth 가중
+    if ratio_price > 0 and smooth_price > 0 and smooth_method != "smooth_price_far_range":
+        fp_values = [float(v.get("factory_price", 0) or 0) for v in calc_vehicles if float(v.get("factory_price", 0) or 0) > 0]
+        fp_cv = (statistics.stdev(fp_values) / statistics.mean(fp_values)) if len(fp_values) >= 2 and statistics.mean(fp_values) > 0 else 0
+        divergence = abs(ratio_price - smooth_price) / smooth_price if smooth_price > 0 else 0
+        if fp_cv > 0.05 and divergence > 0.15:
+            ratio_w, smooth_w = 0.0, 1.0
+        elif fp_cv > 0.05:
+            ratio_w, smooth_w = 0.30, 0.70
+        else:
+            ratio_w, smooth_w = 0.50, 0.50
+        est_price = _round10(ratio_price * ratio_w + smooth_price * smooth_w)
+        result.estimated_auction = est_price
+        if tgt_ref_price > 0:
+            result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
+        result.method = f"{ratio_method}+smooth_blend"
+        result.success = True
+        logger.info(
+            "낙찰 blend: ratio=%.1f, smooth=%.1f, fp_cv=%.3f, div=%.3f, w=%.0f:%.0f → %d",
+            ratio_price, smooth_price, fp_cv, divergence, ratio_w * 100, smooth_w * 100, est_price,
+        )
+    elif smooth_method == "smooth_price_far_range" and smooth_price > 0:
+        # 원거리 외삽: 비율 외삽보다 비즈니스 룰 기반 평활이 더 안정적
+        result.estimated_auction = _round10(smooth_price)
+        if tgt_ref_price > 0:
+            result.estimated_ratio = round(smooth_price / tgt_ref_price * 100, 1)
+        result.method = smooth_method
+        result.success = True
+    elif ratio_price > 0:
+        result.estimated_auction = _round10(ratio_price)
+        if tgt_ref_price > 0:
+            result.estimated_ratio = round(ratio_price / tgt_ref_price * 100, 1)
+        result.method = ratio_method
+        result.success = True
+    elif smooth_price > 0:
+        result.estimated_auction = _round10(smooth_price)
+        if tgt_ref_price > 0:
+            result.estimated_ratio = round(smooth_price / tgt_ref_price * 100, 1)
+        result.method = smooth_method
+        result.success = True
 
     # 신뢰도
     target_bracket = bracket_map.get(_bracket_key(mileage))
@@ -2602,7 +2676,7 @@ def estimate_export_auction_by_market(
                     blended.mileage_slope, blended.ref_mileage,
                 )
                 result.learned_correction_applied = True
-            result.estimated_auction = est_price
+            result.estimated_auction = _round10(est_price)
             if tgt_ref_price > 0:
                 result.estimated_ratio = round(est_price / tgt_ref_price * 100, 1)
             result.method = method
