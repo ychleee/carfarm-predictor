@@ -123,6 +123,9 @@ def _safe_number(val, default=0) -> float | int:
         return default
 
 
+_ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
+_HEYDEALER_COMPANY_ID = "cRFWlHv4PZczXpd8bEw2"
+
 _USAGE_MAP = {
     "자가용": "personal",
     "렌터카": "rental",
@@ -336,7 +339,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "모델": data.get("vehicleModel") or "",
         "연식": int(_safe_number(data.get("vehicleYear"))),
         "주행거리": int(_safe_number(data.get("mileage"))),
-        "낙찰가": _safe_number(data.get("actualBidPrice")),
+        "낙찰가": _normalize_price(_safe_number(data.get("actualBidPrice"))),
         "색상": color,
         "옵션": options_str,
         "개최일": _ts_to_iso(sale_date),
@@ -519,7 +522,6 @@ def search_retail_db(
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
 
-    _ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
     fetch_limit = min(limit * 10, 5000)
     # 하이픈 변형 토큰으로 모두 검색하여 합침
     seen_ids: set[str] = set()
@@ -618,13 +620,13 @@ def search_auction_db(
     export_only: bool = False,
     limit: int = 500,
     sort_by: str = "날짜",
-    company_id: str | None = None,
+    company_id: str | None = _HEYDEALER_COMPANY_ID,
 ) -> list[dict]:
     """
-    Firestore vehicles 컬렉션에서 조건 검색.
+    Firestore vehicles 컬렉션에서 헤이딜러 경매 데이터 검색.
 
     searchTokens 필드의 array-contains로 vehicleModel 검색.
-    company_id 지정 시 해당 회사 데이터만 반환.
+    company_id 기본값: 헤이딜러. None 전달 시 전체.
     """
     db = get_firestore_db()
     col = db.collection("vehicles")
