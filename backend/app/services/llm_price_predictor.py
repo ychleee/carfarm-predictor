@@ -200,14 +200,17 @@ def _similarity_score(target: dict, vehicle: dict) -> float:
     if t_fuel and v_fuel and not _fuel_match(t_fuel, v_fuel):
         return -999
 
-    # 트림 일치 ("기본형"/"(세부등급 없음)" 정규화)
+    # 트림 일치 ("기본형"/"(세부등급 없음)" 정규화, 공백 차이 허용)
     from app.services.firestore_db import _normalize_trim
     t_trim = _normalize_trim(target.get("trim") or "")
     v_trim = _normalize_trim(vehicle.get("trim") or "")
     if t_trim and v_trim:
-        if t_trim == v_trim:
+        t_compact = t_trim.replace(" ", "")
+        v_compact = v_trim.replace(" ", "")
+        if t_trim == v_trim or t_compact == v_compact:
             score += 30
-        elif t_trim in v_trim or v_trim in t_trim:
+        elif (t_trim in v_trim or v_trim in t_trim
+              or (t_compact and v_compact and (t_compact in v_compact or v_compact in t_compact))):
             score += 20
 
     # 연식 차이
@@ -286,7 +289,7 @@ def _is_hybrid(fuel: str) -> bool:
 
 
 def _fuel_match(a: str, b: str) -> bool:
-    """연료 동의어 매칭 — 하이브리드/비하이브리드 엄격 구분"""
+    """연료 동의어 매칭 — 하이브리드/비하이브리드 엄격 구분 (공백 무시)"""
     synonyms = [
         {"가솔린", "휘발유", "gasoline"},
         {"디젤", "경유", "diesel"},
@@ -301,9 +304,14 @@ def _fuel_match(a: str, b: str) -> bool:
     # 하이브리드 구분: 양쪽이 일치해야 함
     if _is_hybrid(a) != _is_hybrid(b):
         return False
+    # 공백 제거 후 비교
+    a_compact = a_lower.replace(" ", "")
+    b_compact = b_lower.replace(" ", "")
+    if a_compact == b_compact:
+        return True
     for group in synonyms:
-        a_in = any(s.lower() in a_lower for s in group)
-        b_in = any(s.lower() in b_lower for s in group)
+        a_in = any(s.lower().replace(" ", "") in a_compact for s in group)
+        b_in = any(s.lower().replace(" ", "") in b_compact for s in group)
         if a_in and b_in:
             return True
     return False

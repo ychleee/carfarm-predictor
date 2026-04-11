@@ -20,19 +20,46 @@ from app.services.taxonomy_search import resolve_base_model
 
 
 def _search_token_variants(token: str) -> list[str]:
-    """하이픈 포함/미포함 변형 토큰 생성 (중복 제거, 원본 우선)"""
+    """
+    검색 토큰의 공백/하이픈 변형 생성 (중복 제거, 원본 우선).
+
+    생성되는 변형:
+      1) 원본
+      2) 하이픈 제거/삽입 (영문↔한글 경계)
+      3) 공백 제거 / 한글-영문 경계 공백 삽입
+
+    예:
+      "그랜저hg" → ["그랜저hg", "그랜저 hg"]
+      "그랜저 hg" → ["그랜저 hg", "그랜저hg"]
+      "e클래스" → ["e클래스", "e-클래스", "e 클래스"]
+      "land rover" → ["land rover", "landrover"]
+    """
     if not token:
         return []
     variants = [token]
+    seen = {token}
+
+    def _add(v: str) -> None:
+        if v and v not in seen:
+            variants.append(v)
+            seen.add(v)
+
+    # 1) 하이픈 변형
     if "-" in token:
-        without = token.replace("-", "")
-        if without != token:
-            variants.append(without)
+        _add(token.replace("-", ""))
     else:
-        # 영문+한글 경계에 하이픈 삽입 (e.g. "e클래스" → "e-클래스")
-        with_hyphen = re.sub(r"([a-z])([가-힣])", r"\1-\2", token)
-        if with_hyphen != token:
-            variants.append(with_hyphen)
+        _add(re.sub(r"([a-z])([가-힣])", r"\1-\2", token))
+
+    # 2) 공백 변형
+    if " " in token:
+        # 공백 제거 버전 추가
+        _add(token.replace(" ", ""))
+    else:
+        # 한글-영문/숫자 경계에 공백 삽입 (e.g. "그랜저hg" → "그랜저 hg")
+        spaced = re.sub(r"([가-힣])([a-z0-9])", r"\1 \2", token)
+        spaced = re.sub(r"([a-z0-9])([가-힣])", r"\1 \2", spaced)
+        _add(spaced)
+
     return variants
 
 
@@ -54,8 +81,10 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
     """트림 유연 매칭.
 
     1) 양방향 포함 관계면 매칭.
-    2) 정규화 후 양방향 포함.
-    3) 정규화 후 대상 토큰이 모두 차량 트림에 포함되면 매칭.
+    2) 공백 제거 후 양방향 포함.
+    3) 정규화 후 양방향 포함.
+    4) 정규화 + 공백 제거 후 양방향 포함.
+    5) 정규화 후 대상 토큰이 모두 차량 트림에 포함되면 매칭.
        예: "2.5 AWD 기본형" → tokens {"2.5", "awd"} ⊆ "2.5t 가솔린 awd"
     """
     if not target_trim:
@@ -69,6 +98,14 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
     if t in v or v in t:
         return True
 
+    # 원본 단계 공백 제거 후 재시도 ("HG 300 프리미엄" vs "HG300 프리미엄" 등)
+    t_nospace = t.replace(" ", "")
+    v_nospace = v.replace(" ", "")
+    if t_nospace == v_nospace:
+        return True
+    if t_nospace and v_nospace and (t_nospace in v_nospace or v_nospace in t_nospace):
+        return True
+
     # 정규화 후 재시도
     tn = _normalize_trim(target_trim)
     vn = _normalize_trim(vehicle_trim)
@@ -79,12 +116,12 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
     if tn in vn or vn in tn:
         return True
 
-    # 공백 제거 후 비교 ("모던피버" vs "모던 피버" 등 띄어쓰기 차이 허용)
+    # 정규화 + 공백 제거 후 비교 ("모던피버" vs "모던 피버" 등)
     tn_nospace = tn.replace(" ", "")
     vn_nospace = vn.replace(" ", "")
     if tn_nospace == vn_nospace:
         return True
-    if tn_nospace in vn_nospace or vn_nospace in tn_nospace:
+    if tn_nospace and vn_nospace and (tn_nospace in vn_nospace or vn_nospace in tn_nospace):
         return True
 
     # 토큰 기반 매칭: 대상 트림의 핵심 토큰이 모두 차량 트림에 포함
@@ -190,7 +227,7 @@ _build_maker_aliases()
 
 
 def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
-    """제작사 매칭 — 직접 일치, canonical 비교, 부분 포함"""
+    """제작사 매칭 — 직접 일치, canonical 비교, 부분 포함 (공백 무시)"""
     vm = vehicle_maker.lower().strip()
     qm = query_maker.lower().strip()
     if vm == qm:
@@ -207,6 +244,18 @@ def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
         return True
     # 부분 포함 매칭 (예: "메르세데스-벤츠" vs "벤츠")
     if qm in vm or vm in qm:
+        return True
+    # 공백/하이픈 제거 후 재매칭 (예: "land rover" vs "landrover", "메르세데스-벤츠" vs "메르세데스벤츠")
+    vm_compact = vm.replace(" ", "").replace("-", "")
+    qm_compact = qm.replace(" ", "").replace("-", "")
+    if vm_compact == qm_compact:
+        return True
+    if vm_compact and qm_compact and (qm_compact in vm_compact or vm_compact in qm_compact):
+        return True
+    # canonical도 공백/하이픈 제거 비교
+    vmc_canonical = _MAKER_ALIASES.get(vm_compact)
+    qmc_canonical = _MAKER_ALIASES.get(qm_compact)
+    if vmc_canonical and qmc_canonical and vmc_canonical == qmc_canonical:
         return True
     return False
 
@@ -433,6 +482,7 @@ def _is_hybrid(fuel: str) -> bool:
 def _match_fuel(value: str | None, keyword: str | None) -> bool:
     """연료 동의어를 포함한 매칭 (가솔린↔휘발유, 디젤↔경유 등).
     하이브리드/비하이브리드를 엄격 구분: 가솔린 ≠ 가솔린 하이브리드.
+    공백 차이는 무시.
     """
     if not keyword:
         return True
@@ -441,14 +491,23 @@ def _match_fuel(value: str | None, keyword: str | None) -> bool:
     # 하이브리드 구분: 양쪽이 일치해야 함
     if _is_hybrid(keyword) != _is_hybrid(value):
         return False
+    kw_lower = keyword.lower()
+    val_lower = value.lower()
     # 일반 매칭
-    if keyword.lower() in value.lower():
+    if kw_lower in val_lower:
         return True
-    # 동의어 매칭
-    synonyms = _FUEL_SYNONYMS.get(keyword)
+    # 공백 제거 후 매칭 (예: "가솔린 하이브리드" vs "가솔린하이브리드")
+    kw_compact = kw_lower.replace(" ", "")
+    val_compact = val_lower.replace(" ", "")
+    if kw_compact in val_compact:
+        return True
+    # 동의어 매칭 (공백 제거 비교)
+    synonyms = _FUEL_SYNONYMS.get(keyword) or _FUEL_SYNONYMS.get(kw_lower)
     if synonyms:
-        val_lower = value.lower()
-        return any(s.lower() in val_lower for s in synonyms)
+        for s in synonyms:
+            s_compact = s.lower().replace(" ", "")
+            if s_compact in val_compact:
+                return True
     return False
 
 
