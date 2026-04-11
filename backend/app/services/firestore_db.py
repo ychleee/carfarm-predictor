@@ -79,6 +79,14 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
     if tn in vn or vn in tn:
         return True
 
+    # 공백 제거 후 비교 ("모던피버" vs "모던 피버" 등 띄어쓰기 차이 허용)
+    tn_nospace = tn.replace(" ", "")
+    vn_nospace = vn.replace(" ", "")
+    if tn_nospace == vn_nospace:
+        return True
+    if tn_nospace in vn_nospace or vn_nospace in tn_nospace:
+        return True
+
     # 토큰 기반 매칭: 대상 트림의 핵심 토큰이 모두 차량 트림에 포함
     t_tokens = _trim_tokens(tn)
     if t_tokens:
@@ -146,6 +154,7 @@ def _build_maker_aliases() -> None:
         ("기아", "kia"),
         ("제네시스", "genesis"),
         ("쌍용", "ssangyong"), ("kg모빌리티", "ssangyong"),
+        ("kg모빌리티(쌍용)", "ssangyong"),
         ("르노코리아", "renault"), ("르노삼성", "renault"),
         ("르노코리아(삼성)", "renault"), ("르노(삼성)", "renault"),
         ("쉐보레", "chevrolet"),
@@ -389,8 +398,10 @@ _FUEL_SYNONYMS = {
     "휘발유": {"휘발유", "가솔린", "gasoline"},
     "디젤": {"경유", "디젤", "diesel"},
     "경유": {"경유", "디젤", "diesel"},
-    "LPG": {"LPG", "lpg", "엘피지"},
-    "엘피지": {"LPG", "lpg", "엘피지"},
+    "LPG": {"LPG", "lpg", "LPi", "lpi", "엘피지"},
+    "LPi": {"LPG", "lpg", "LPi", "lpi", "엘피지"},
+    "lpi": {"LPG", "lpg", "LPi", "lpi", "엘피지"},
+    "엘피지": {"LPG", "lpg", "LPi", "lpi", "엘피지"},
     "하이브리드": {"하이브리드", "hybrid"},
     "전기": {"전기", "electric", "EV"},
 }

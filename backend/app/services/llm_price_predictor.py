@@ -292,7 +292,7 @@ def _fuel_match(a: str, b: str) -> bool:
         {"디젤", "경유", "diesel"},
         {"하이브리드", "hybrid", "HEV"},
         {"전기", "EV", "electric"},
-        {"LPG", "lpg"},
+        {"LPG", "lpg", "LPi", "lpi", "엘피지"},
     ]
     a_lower = a.lower()
     b_lower = b.lower()

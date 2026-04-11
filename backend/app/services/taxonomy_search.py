@@ -162,6 +162,13 @@ def resolve_base_model(raw_model: str, maker: str | None = None) -> str:
     # maker가 있으면 해당 제작사의 모델만, 없으면 전체
     if maker:
         maker_data = taxonomy.get(maker, {})
+        # 택소노미에 없으면 부분 매칭 시도 ("KG모빌리티(쌍용)" → "쌍용")
+        if not maker_data:
+            maker_lower = maker.lower()
+            for tax_maker in taxonomy:
+                if tax_maker.lower() in maker_lower or maker_lower in tax_maker.lower():
+                    maker_data = taxonomy[tax_maker]
+                    break
         model_names = list(maker_data.get("models", {}).keys())
     else:
         model_names = []
