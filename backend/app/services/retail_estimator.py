@@ -724,10 +724,14 @@ def _filter_gap_outliers(
     priced.sort(key=lambda x: x[1])
     excluded_indices: set[int] = set()
 
+    # 최소 유지 건수: 전체의 2/3 또는 3건 중 큰 값
+    # — 데이터가 적을 때 과도한 제거 방지
+    min_keep = max(math.ceil(len(priced) * 2 / 3), 3)
+
     # 하단 gap 제거
-    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) >= 3:
+    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) > min_keep:
         active = [(i, p) for i, p in priced if i not in excluded_indices]
-        if len(active) < 3:
+        if len(active) <= min_keep:
             break
         lowest_idx, lowest_p = active[0]
         next_p = active[1][1]
@@ -737,9 +741,9 @@ def _filter_gap_outliers(
             break
 
     # 상단 gap 제거
-    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) >= 3:
+    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) > min_keep:
         active = [(i, p) for i, p in priced if i not in excluded_indices]
-        if len(active) < 3:
+        if len(active) <= min_keep:
             break
         highest_idx, highest_p = active[-1]
         prev_p = active[-2][1]

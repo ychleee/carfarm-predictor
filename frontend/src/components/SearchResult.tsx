@@ -92,6 +92,9 @@ function buildSmartDefaults(target: TargetVehicle): AuctionFilters {
   };
 }
 
+// 엔카 데이터 최소 가격 기준 (만원): 출고가/기본가 1000만원 미만 제외
+const ENCAR_MIN_PRICE_MANWON = 1000;
+
 function applyFilters(
   vehicles: AuctionVehicle[],
   filters: AuctionFilters,
@@ -99,6 +102,9 @@ function applyFilters(
 ): AuctionVehicle[] {
   return vehicles.filter((v) => {
     if (deletedIds.has(v.auction_id)) return false;
+    // 엔카 데이터: 출고가/기본가 1000만원 미만 제외
+    if (v.factory_price != null && v.factory_price > 0 && v.factory_price < ENCAR_MIN_PRICE_MANWON) return false;
+    if (v.base_price != null && v.base_price > 0 && v.base_price < ENCAR_MIN_PRICE_MANWON) return false;
     if (filters.trim && v.trim !== filters.trim) return false;
     if (filters.fuel && v.fuel !== filters.fuel) return false;
     if (filters.color && v.color !== filters.color) return false;

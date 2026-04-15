@@ -171,6 +171,9 @@ def _safe_number(val, default=0) -> float | int:
 _ENCAR_COMPANY_ID = "KYMaGfcnzwGsvbDm6Z91"
 _HEYDEALER_COMPANY_ID = "cRFWlHv4PZczXpd8bEw2"
 
+# 엔카 데이터 최소 가격 기준 (원 단위): 출고가/기본가 1천만원 미만은 이상치로 제외
+_ENCAR_MIN_PRICE_WON = 10_000_000
+
 _USAGE_MAP = {
     "자가용": "personal",
     "렌터카": "rental",
@@ -438,6 +441,7 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
             data.get("diagnosisCar")
             or data.get("has_diagnosis")
             or "엔카진단:Y" in (data.get("description") or "")
+            or "엔카진단 차량" in (data.get("inspectionNote") or "")
         ),
     }
 
@@ -631,6 +635,12 @@ def search_retail_db(
         if raw_factory <= 0 and raw_base <= 0:
             continue
 
+        # 엔카 데이터: 출고가/기본가 1천만원 미만 이상치 제외
+        if raw_factory > 0 and raw_factory < _ENCAR_MIN_PRICE_WON:
+            continue
+        if raw_base > 0 and raw_base < _ENCAR_MIN_PRICE_WON:
+            continue
+
         # 연식 범위
         year = int(_safe_number(data.get("vehicleYear")))
         if year_min and (not year or year < year_min):
@@ -765,6 +775,14 @@ def search_auction_db(
         raw_base = _safe_number(data.get("vehicleBasePrice"))
         if raw_factory <= 0 and raw_base <= 0:
             continue
+
+        # 엔카 데이터: 출고가/기본가 1천만원 미만 이상치 제외
+        v_company = data.get("companyId") or ""
+        if v_company == _ENCAR_COMPANY_ID:
+            if raw_factory > 0 and raw_factory < _ENCAR_MIN_PRICE_WON:
+                continue
+            if raw_base > 0 and raw_base < _ENCAR_MIN_PRICE_WON:
+                continue
 
         # 가격 이상치 제외 (기본가/출고가 대비)
         _price_mw = _normalize_price(price)
@@ -1077,6 +1095,7 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
             data.get("diagnosisCar")
             or data.get("has_diagnosis")
             or "엔카진단:Y" in (data.get("description") or "")
+            or "엔카진단 차량" in (data.get("inspectionNote") or "")
         ),
     }
 
