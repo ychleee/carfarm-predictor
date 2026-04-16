@@ -27,12 +27,14 @@ def _search_token_variants(token: str) -> list[str]:
       1) 원본
       2) 하이픈 제거/삽입 (영문↔한글 경계)
       3) 공백 제거 / 한글-영문 경계 공백 삽입
+      4) 한글 3글자 프리픽스 (DB에 띄어쓰기 변형이 있을 때 보완)
 
     예:
       "그랜저hg" → ["그랜저hg", "그랜저 hg"]
       "그랜저 hg" → ["그랜저 hg", "그랜저hg"]
       "e클래스" → ["e클래스", "e-클래스", "e 클래스"]
       "land rover" → ["land rover", "landrover"]
+      "트레일블레이저" → ["트레일블레이저", "트레일"]
     """
     if not token:
         return []
@@ -51,24 +53,52 @@ def _search_token_variants(token: str) -> list[str]:
         _add(re.sub(r"([a-z])([가-힣])", r"\1-\2", token))
 
     # 2) 공백 변형
-    if " " in token:
-        # 공백 제거 버전 추가
-        _add(token.replace(" ", ""))
-    else:
+    nospace = token.replace(" ", "")
+    _add(nospace)  # 항상 공백 제거 버전 추가
+    if " " not in token:
         # 한글-영문/숫자 경계에 공백 삽입 (e.g. "그랜저hg" → "그랜저 hg")
         spaced = re.sub(r"([가-힣])([a-z0-9])", r"\1 \2", token)
         spaced = re.sub(r"([a-z0-9])([가-힣])", r"\1 \2", spaced)
         _add(spaced)
 
+    # 3) 한글 프리픽스: DB에 "트레일 블레이저" 처럼 띄어쓰기 변형이 있을 때 보완
+    #    순수 한글 3글자 이상이면 앞 3글자로도 검색 → Python 후필터로 정확도 보장
+    ko_only = re.sub(r"[^가-힣]", "", nospace)
+    if len(ko_only) > 3:
+        _add(ko_only[:3])
+
     return variants
 
 
+# 한↔영 트림 동의어 (한글 → 영어 정규화)
+_TRIM_KO_TO_EN: dict[str, str] = {
+    "라인": "line",
+    "스포츠": "sport",
+    "스포트": "sport",
+    "럭셔리": "luxury",
+    "프레스티지": "prestige",
+    "프리미엄": "premium",
+    "시그니처": "signature",
+    "에디션": "edition",
+    "플래티넘": "platinum",
+    "익스클루시브": "exclusive",
+    "어드밴티지": "advantage",
+    "이노베이션": "innovation",
+    "인스퍼레이션": "inspiration",
+    "컴포트": "comfort",
+    "퍼포먼스": "performance",
+}
+
+
 def _normalize_trim(trim: str) -> str:
-    """트림 정규화: '기본형', '(세부등급 없음)' 등 제거 + 소문자."""
+    """트림 정규화: '기본형', '(세부등급 없음)' 등 제거 + 소문자 + 한↔영 동의어."""
     t = trim.strip().lower()
     # "기본형", "(세부등급 없음)", "(세부등급없음)" 제거
     for tag in ("(세부등급 없음)", "(세부등급없음)", "기본형"):
         t = t.replace(tag, "")
+    # 한글 트림 용어 → 영어로 정규화 (양쪽을 동일 표현으로 통일)
+    for ko, en in _TRIM_KO_TO_EN.items():
+        t = t.replace(ko, en)
     return t.strip()
 
 
@@ -137,13 +167,16 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
 
 def _token_in_text(token: str, text: str) -> bool:
     """토큰이 텍스트에 포함되는지 유연 매칭.
-    배기량 숫자는 접두사 매칭 (2.5 → 2.5t 허용).
+    배기량 숫자는 양방향 접두사 매칭 (2.5 → 2.5t, 1.35 ↔ 1.3 허용).
     """
     if token in text:
         return True
-    # 배기량 패턴: "2.5" → "2.5t", "3.3" → "3.3t" 등
+    # 배기량 패턴: 양방향 접두사 매칭
+    # "2.5" → "2.5t", "1.35" ↔ "1.3" (같은 엔진의 다른 표기)
     if re.match(r"^\d+\.\d+$", token):
-        return any(part.startswith(token) for part in text.split())
+        for part in text.split():
+            if part.startswith(token) or token.startswith(part.rstrip("t터보")):
+                return True
     return False
 
 
@@ -229,8 +262,13 @@ def _build_maker_aliases() -> None:
 _build_maker_aliases()
 
 
+def _strip_maker_paren(name: str) -> str:
+    """제작사명에서 괄호 부분 제거 (예: "쉐보레(GM대우)" → "쉐보레")."""
+    return re.sub(r"\s*[\(（][^\)）]*[\)）]\s*", "", name).strip()
+
+
 def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
-    """제작사 매칭 — 직접 일치, canonical 비교, 부분 포함 (공백 무시)"""
+    """제작사 매칭 — 직접 일치, canonical 비교, 부분 포함 (공백/괄호 무시)"""
     vm = vehicle_maker.lower().strip()
     qm = query_maker.lower().strip()
     if vm == qm:
@@ -260,6 +298,24 @@ def _match_maker(vehicle_maker: str, query_maker: str) -> bool:
     qmc_canonical = _MAKER_ALIASES.get(qm_compact)
     if vmc_canonical and qmc_canonical and vmc_canonical == qmc_canonical:
         return True
+    # 괄호 제거 후 재매칭 (예: "쉐보레(GM대우)" vs "쉐보레(대우)" → 둘 다 "쉐보레")
+    vm_bare = _strip_maker_paren(vm)
+    qm_bare = _strip_maker_paren(qm)
+    if vm_bare and qm_bare:
+        if vm_bare == qm_bare:
+            return True
+        # 괄호 제거 후 canonical 비교
+        vmb_canonical = _MAKER_ALIASES.get(vm_bare)
+        qmb_canonical = _MAKER_ALIASES.get(qm_bare)
+        if vmb_canonical and qmb_canonical and vmb_canonical == qmb_canonical:
+            return True
+        if vmb_canonical and vmb_canonical == qm_bare:
+            return True
+        if qmb_canonical and qmb_canonical == vm_bare:
+            return True
+        # 포함 관계 (예: 원본이 "쉐보레(...)" 인 경우)
+        if vm_bare in qm or qm_bare in vm:
+            return True
     return False
 
 # ── 프레임 vs 외부패널 분류 ──
@@ -609,9 +665,20 @@ def search_retail_db(
                 seen_ids.add(doc.id)
                 docs.append(doc)
 
+    # 모델명 공백·접두사 정규화 (프리픽스 검색 보완)
+    model_nospace = model_lower.replace(" ", "") if model_lower else ""
     results = []
     for doc in docs:
         data = doc.to_dict()
+
+        # 모델명 후필터 (공백·세대접두사 무시 비교)
+        if model_nospace:
+            v_model = (data.get("vehicleModel") or "").lower().replace(" ", "")
+            v_model_base = re.sub(
+                r"^(더뉴|올뉴|디뉴|더올뉴|더뉴올|뉴)", "", v_model
+            )
+            if model_nospace not in v_model and model_nospace not in v_model_base:
+                continue
 
         # maker 후필터 (한글/영어 무관 필터링)
         if maker:
@@ -746,6 +813,8 @@ def search_auction_db(
                     docs.append(doc)
 
     # 2차: Python 후처리 필터
+    # 모델명 공백·접두사 정규화 (프리픽스 검색 보완)
+    model_nospace = model_lower.replace(" ", "") if model_lower else ""
     results = []
     for doc in docs:
         data = doc.to_dict()
@@ -753,6 +822,16 @@ def search_auction_db(
         # companyId 필터 (Firestore 쿼리에서 처리하지 못한 경우)
         if company_id and not use_company_filter_in_query:
             if (data.get("companyId") or "") != company_id:
+                continue
+
+        # 모델명 후필터 (공백·세대접두사 무시 비교)
+        if model_nospace:
+            v_model = (data.get("vehicleModel") or "").lower().replace(" ", "")
+            # 세대접두사("더뉴", "올뉴" 등) 제거 후 비교
+            v_model_base = re.sub(
+                r"^(더뉴|올뉴|디뉴|더올뉴|더뉴올|뉴)", "", v_model
+            )
+            if model_nospace not in v_model and model_nospace not in v_model_base:
                 continue
 
         # maker 후필터 (Firestore 쿼리 후 Python에서 한글/영어 무관 필터링)
