@@ -513,6 +513,8 @@ _FUEL_SYNONYMS = {
     "엘피지": {"LPG", "lpg", "LPi", "lpi", "엘피지"},
     "하이브리드": {"하이브리드", "hybrid"},
     "전기": {"전기", "electric", "EV"},
+    "수소": {"수소", "수소+전기", "hydrogen", "fcev"},
+    "수소+전기": {"수소", "수소+전기", "hydrogen", "fcev"},
 }
 
 
