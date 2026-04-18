@@ -21,6 +21,7 @@ from app.services.firestore_db import (
     search_retail_db,
     get_price_stats,
 )
+from app.services.taxonomy_search import resolve_base_model
 logger = logging.getLogger(__name__)
 
 # =========================================================================
@@ -334,6 +335,27 @@ def _fetch_comparable_vehicles(target: dict) -> tuple[list[dict], list[dict], di
     year = target.get("year", 2024)
     fuel = target.get("fuel")
     trim = target.get("trim")
+
+    # 모델↔트림 필드 오매핑 보정: model이 maker와 같으면 trim에서 모델 추출
+    # 예: model="현대", trim="아반떼MD M16 GDi 럭셔리" → model="아반떼", trim="M16 GDi 럭셔리"
+    if model and trim and model.strip() == maker.strip():
+        resolved = resolve_base_model(trim, maker)
+        if resolved and resolved.lower() != maker.lower():
+            # trim에서 모델명 부분 제거하여 실제 트림만 남김
+            remaining = trim
+            # 정규화된 모델명(예: "아반떼")을 원본 trim에서 찾아 제거
+            import re as _re
+            # "아반떼MD" 처럼 세대접두사+모델이 붙어있을 수 있으므로 전체 앞부분에서 제거
+            pattern = _re.compile(
+                r"^(?:더\s*올?\s*뉴\s*|올\s*뉴\s*|뉴\s*)?.*?" + _re.escape(resolved),
+                _re.IGNORECASE,
+            )
+            m = pattern.search(remaining)
+            if m:
+                remaining = remaining[m.end():].strip()
+            model = resolved
+            trim = remaining or None
+            logger.info("모델↔트림 보정: model=%s, trim=%s", model, trim)
 
     # 같은 연식 → ±1 → ±2 → ±3 자동 확대
     auction_raw: list[dict] = []

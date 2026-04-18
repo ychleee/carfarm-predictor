@@ -71,23 +71,83 @@ def _search_token_variants(token: str) -> list[str]:
 
 
 # 한↔영 트림 동의어 (한글 → 영어 정규화)
-_TRIM_KO_TO_EN: dict[str, str] = {
-    "라인": "line",
-    "스포츠": "sport",
-    "스포트": "sport",
+# ※ 긴 문자열부터 먼저 치환해야 부분 매칭 오류 방지
+#   (예: "스포트백" → "sportback" 이 "스포트" → "sport" 보다 먼저)
+_TRIM_KO_TO_EN_RAW: dict[str, str] = {
+    # ── 등급·라인 ──
     "럭셔리": "luxury",
     "프레스티지": "prestige",
     "프리미엄": "premium",
-    "시그니처": "signature",
-    "에디션": "edition",
-    "플래티넘": "platinum",
+    "프리미어": "premier",
     "익스클루시브": "exclusive",
-    "어드밴티지": "advantage",
-    "이노베이션": "innovation",
+    "노블레스": "noblesse",
+    "시그니처": "signature",
+    "플래티넘": "platinum",
+    "캘리그래피": "calligraphy",
     "인스퍼레이션": "inspiration",
-    "컴포트": "comfort",
+    "인스크립션": "inscription",
+    "아방가르드": "avantgarde",
+    "마이바흐": "maybach",
+    "슈프림": "supreme",
+    "리미티드": "limited",
+    "얼티메이트": "ultimate",
+    "셀레브리티": "celebrity",
+    # ── 스타일·성격 ──
+    "스포트백": "sportback",
+    "스포츠": "sport",
+    "스포트": "sport",
+    "다이나믹": "dynamic",
+    "모던": "modern",
+    "트렌디": "trendy",
+    "스타일": "style",
+    "디자인": "design",
+    "클래식": "classic",
+    "엘레강스": "elegance",
+    "어드밴티지": "advantage",
+    # ── 기능·기술 ──
     "퍼포먼스": "performance",
+    "컴포트": "comfort",
+    "이노베이션": "innovation",
+    "테크": "tech",
+    "하이테크": "hightech",
+    "블루이피션시": "blueefficiency",
+    "블루텍": "bluetec",
+    "블루모션": "bluemotion",
+    # ── 패키지·옵션 ──
+    "스페셜": "special",
+    "에디션": "edition",
+    "플러스": "plus",
+    "디럭스": "deluxe",
+    "패키지": "package",
+    "프로": "pro",
+    "스탠다드": "standard",
+    # ── 구동·구조 ──
+    "콰트로": "quattro",
+    "매틱": "matic",
+    "라인": "line",
+    # ── 외형·색상 ──
+    "블랙": "black",
+    "브라이트": "bright",
+    "그란쿠페": "grancoupe",
+    "컨버터블": "convertible",
+    "로드스터": "roadster",
+    # ── 기타 공통 ──
+    "골드": "gold",
+    "프라임": "prime",
+    "스마트": "smart",
+    "마스터즈": "masters",
+    "익스트림": "extreme",
+    "오버랜드": "overland",
+    "터보": "turbo",
+    "하이브리드": "hybrid",
+    "포트폴리오": "portfolio",
+    "그랜드": "grand",
+    "레인지": "range",
 }
+# 긴 키부터 먼저 치환되도록 정렬
+_TRIM_KO_TO_EN: list[tuple[str, str]] = sorted(
+    _TRIM_KO_TO_EN_RAW.items(), key=lambda x: len(x[0]), reverse=True
+)
 
 
 def _normalize_trim(trim: str) -> str:
@@ -96,8 +156,8 @@ def _normalize_trim(trim: str) -> str:
     # "기본형", "(세부등급 없음)", "(세부등급없음)" 제거
     for tag in ("(세부등급 없음)", "(세부등급없음)", "기본형"):
         t = t.replace(tag, "")
-    # 한글 트림 용어 → 영어로 정규화 (양쪽을 동일 표현으로 통일)
-    for ko, en in _TRIM_KO_TO_EN.items():
+    # 한글 트림 용어 → 영어로 정규화 (긴 문자열부터 치환)
+    for ko, en in _TRIM_KO_TO_EN:
         t = t.replace(ko, en)
     return t.strip()
 
