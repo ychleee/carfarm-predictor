@@ -377,6 +377,27 @@ def _fetch_comparable_vehicles(target: dict) -> tuple[list[dict], list[dict], di
         if len(auction_raw) + len(retail_raw) >= 3:
             break
 
+    # 트림 필터로 결과 부족 시 트림 없이 재검색 (유사도 점수로 정렬)
+    if trim and len(auction_raw) + len(retail_raw) < 3:
+        logger.info("트림 '%s' 매칭 결과 부족 (%d건) → 트림 없이 재검색",
+                     trim, len(auction_raw) + len(retail_raw))
+        for y_delta in (0, 1, 2, 3):
+            y_min = year - y_delta
+            y_max = year + y_delta
+            auction_raw = search_auction_db(
+                model=model, maker=maker, fuel=fuel, trim=None,
+                year_min=y_min, year_max=y_max,
+                limit=200, sort_by="날짜",
+                domestic_only=False,
+            )
+            retail_raw = search_retail_db(
+                model=model, maker=maker, fuel=fuel, trim=None,
+                year_min=y_min, year_max=y_max,
+                limit=200,
+            )
+            if len(auction_raw) + len(retail_raw) >= 3:
+                break
+
     # 3) 유사도 점수로 정렬 + 상위 선별 (내수/수출 분리 확보)
     for v in auction_raw:
         v["_score"] = _similarity_score(target, v)
