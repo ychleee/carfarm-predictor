@@ -19,19 +19,42 @@ from app.services.rule_engine import normalize_color
 from app.services.taxonomy_search import resolve_base_model
 
 
+def _normalize_model_name(name: str) -> str:
+    """한글 혼용 표기 정규화 (ㅓ↔ㅕ, ㅐ↔ㅔ, 쌍자음 등).
+
+    Firestore searchTokens에 저장된 표기와 택소노미 표기가 다를 수 있으므로
+    Firestore 기준 표기로 정규화.
+    """
+    for alt, canonical in _MODEL_NORMALIZE_MAP:
+        name = name.replace(alt, canonical)
+    return name
+
+
+# (택소노미 표기, Firestore 표기) — 한글 혼용 표기 차이 보정
+_MODEL_NORMALIZE_MAP: list[tuple[str, str]] = [
+    ("그랜져", "그랜저"),
+    ("소나타", "쏘나타"),
+    ("소렌토", "쏘렌토"),
+    ("아반테", "아반떼"),
+    ("투산", "투싼"),
+    ("산타페", "싼타페"),
+]
+
+
 def _search_token_variants(token: str) -> list[str]:
     """
     검색 토큰의 공백/하이픈 변형 생성 (중복 제거, 원본 우선).
 
     생성되는 변형:
       1) 원본
-      2) 하이픈 제거/삽입 (영문↔한글 경계)
-      3) 공백 제거 / 한글-영문 경계 공백 삽입
-      4) 한글 3글자 프리픽스 (DB에 띄어쓰기 변형이 있을 때 보완)
+      2) 한글 혼용 표기 정규화 (그랜져→그랜저 등)
+      3) 하이픈 제거/삽입 (영문↔한글 경계)
+      4) 공백 제거 / 한글-영문 경계 공백 삽입
+      5) 한글 3글자 프리픽스 (DB에 띄어쓰기 변형이 있을 때 보완)
 
     예:
       "그랜저hg" → ["그랜저hg", "그랜저 hg"]
-      "그랜저 hg" → ["그랜저 hg", "그랜저hg"]
+      "그랜져" → ["그랜져", "그랜저"]
       "e클래스" → ["e클래스", "e-클래스", "e 클래스"]
       "land rover" → ["land rover", "landrover"]
       "트레일블레이저" → ["트레일블레이저", "트레일"]
@@ -45,6 +68,10 @@ def _search_token_variants(token: str) -> list[str]:
         if v and v not in seen:
             variants.append(v)
             seen.add(v)
+
+    # 0) 한글 혼용 표기 정규화 (그랜져→그랜저 등)
+    normalized = _normalize_model_name(token)
+    _add(normalized)
 
     # 1) 하이픈 변형
     if "-" in token:
@@ -713,6 +740,7 @@ def search_retail_db(
 
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
+    model_lower = _normalize_model_name(model_lower)
 
     fetch_limit = min(limit * 10, 5000)
     # 하이픈 변형 토큰으로 모두 검색하여 합침
@@ -842,6 +870,7 @@ def search_auction_db(
 
     resolved = resolve_base_model(model, maker) if model else model
     model_lower = resolved.lower().strip() if resolved else ""
+    model_lower = _normalize_model_name(model_lower)
 
     # 하이픈 변형 토큰으로 모두 검색하여 합침
     use_company_filter_in_query = False
