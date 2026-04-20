@@ -638,8 +638,13 @@ def _match_fuel(value: str | None, keyword: str | None) -> bool:
     if not value:
         return False
     # 하이브리드 구분: 양쪽이 일치해야 함
-    if _is_hybrid(keyword) != _is_hybrid(value):
+    kw_hybrid = _is_hybrid(keyword)
+    val_hybrid = _is_hybrid(value)
+    if kw_hybrid != val_hybrid:
         return False
+    # 둘 다 하이브리드이면 매칭 (하이브리드 ↔ 가솔린+전기 등 표기 차이 허용)
+    if kw_hybrid and val_hybrid:
+        return True
     kw_lower = keyword.lower()
     val_lower = value.lower()
     # 일반 매칭
