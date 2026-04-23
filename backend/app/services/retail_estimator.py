@@ -2118,7 +2118,7 @@ def estimate_retail_by_market(
         ratio, method = _interpolate_ratio(mileage, sorted_brackets, vehicle_year=year)
         ratio_price = round(ratio * tgt_ref_price, 1) if ratio > 0 else 0
 
-        # 낙찰과 동일한 평활 가격 추정 (동일 감가 가중치 적용)
+        # 평활 가격 추정 (소매용: 시장 평균 — conservative=False)
         vehicle_class = _determine_vehicle_class(calc_vehicles)
         price_data = _normalize_vehicles_price_only(
             calc_vehicles, vehicle_class, price_field="소매가", full_normalize=True,
@@ -2128,7 +2128,7 @@ def estimate_retail_by_market(
         if price_data:
             price_data = _filter_local_outliers(price_data)
             smooth_price, smooth_method = _smooth_price_estimate(
-                price_data, mileage, conservative=True, vehicle_year=year,
+                price_data, mileage, conservative=False, vehicle_year=year,
             )
 
         # blend: 비율 보간과 평활 가격 (둘 다 유효할 때)
