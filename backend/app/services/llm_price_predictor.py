@@ -775,6 +775,16 @@ def _estimate_export_from_domestic(
     return avg_price, reasoning
 
 
+def _safe_thumbnail(url: str | None) -> str:
+    """CORS 차단되는 외부 도메인 썸네일 제거 (encar 등)"""
+    if not url:
+        return ""
+    blocked = ("ci.encar.com", "encar.com", "img.encar.com")
+    if any(d in url for d in blocked):
+        return ""
+    return url
+
+
 def _compact_auction_vehicle(v: dict) -> dict:
     """낙찰 유사차량 → compact dict (Firestore 용량 절약)"""
     sale_date = v.get("개최일", "")
@@ -798,6 +808,7 @@ def _compact_auction_vehicle(v: dict) -> dict:
         "ee": v.get("exterior_exchange", 0) or 0,
         "eb": v.get("exterior_bodywork", 0) or 0,
         "dg": 1 if v.get("has_diagnosis") else 0,
+        "th": _safe_thumbnail(v.get("thumbnail")),
     }
 
 
@@ -824,6 +835,7 @@ def _compact_retail_vehicle(v: dict) -> dict:
         "eb": v.get("exterior_bodywork", 0) or 0,
         "st": v.get("status", ""),
         "dg": 1 if v.get("has_diagnosis") else 0,
+        "th": _safe_thumbnail(v.get("thumbnail")),
     }
 
 

@@ -597,12 +597,8 @@ def _to_legacy_dict(doc_id: str, data: dict) -> dict:
         "company_id": data.get("companyId") or "",
         "description": data.get("description") or "",
         "status": data.get("status") or "",
-        "has_diagnosis": bool(
-            data.get("diagnosisCar")
-            or data.get("has_diagnosis")
-            or "엔카진단:Y" in (data.get("description") or "")
-            or "엔카진단 차량" in (data.get("inspectionNote") or "")
-        ),
+        "has_diagnosis": "엔카진단:Y" in (data.get("description") or ""),
+        "thumbnail": data.get("thumbnail") or "",
     }
 
 
@@ -1283,12 +1279,8 @@ def _to_retail_dict(doc_id: str, data: dict) -> dict:
         "exterior_bodywork": damage_stats["exterior_bodywork"],
         "exterior_corrosion": damage_stats["exterior_corrosion"],
         "status": data.get("status") or "",
-        "has_diagnosis": bool(
-            data.get("diagnosisCar")
-            or data.get("has_diagnosis")
-            or "엔카진단:Y" in (data.get("description") or "")
-            or "엔카진단 차량" in (data.get("inspectionNote") or "")
-        ),
+        "has_diagnosis": "엔카진단:Y" in (data.get("description") or ""),
+        "thumbnail": data.get("thumbnail") or "",
     }
 
 
