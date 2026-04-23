@@ -249,15 +249,32 @@ def _match_trim(target_trim: str, vehicle_trim: str) -> bool:
         if all(_token_in_text(tok, v_text) for tok in t_tokens):
             return True
 
+    # 역방향 토큰 매칭: 차량 트림의 토큰이 모두 대상 트림에 포함
+    # (대상이 더 구체적인 경우: "2.0 LPI 렌터카 노블레스 스페셜 MX" ⊃ "2.0 LPI 렌터카용 노블레스")
+    v_tokens = _trim_tokens(vn)
+    if v_tokens:
+        t_text = tn
+        if all(_token_in_text(tok, t_text) for tok in v_tokens):
+            return True
+
     return False
 
 
 def _token_in_text(token: str, text: str) -> bool:
     """토큰이 텍스트에 포함되는지 유연 매칭.
     배기량 숫자는 양방향 접두사 매칭 (2.5 → 2.5t, 1.35 ↔ 1.3 허용).
+    한국어 접미사 '용'/'형' 제거 후 매칭 (렌터카용 ↔ 렌터카).
     """
     if token in text:
         return True
+    # 한국어 접미사 '용'/'형' 제거 후 매칭 (렌터카용 ↔ 렌터카)
+    ko_stem = re.sub(r"[용형]$", "", token)
+    if ko_stem and ko_stem != token and ko_stem in text:
+        return True
+    for word in text.split():
+        word_stem = re.sub(r"[용형]$", "", word)
+        if word_stem and word_stem != word and word_stem == token:
+            return True
     # 배기량 패턴: 양방향 접두사 매칭
     # "2.5" → "2.5t", "1.35" ↔ "1.3" (같은 엔진의 다른 표기)
     if re.match(r"^\d+\.\d+$", token):
