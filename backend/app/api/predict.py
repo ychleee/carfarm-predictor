@@ -8,6 +8,7 @@ Claude Sonnet이 데이터 기반으로 적정 가격을 추론합니다.
 import asyncio
 import logging
 import math
+import time
 
 from fastapi import APIRouter, HTTPException
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
@@ -16,6 +17,8 @@ from pydantic import BaseModel
 from app.schemas.vehicle import TargetVehicleSchema
 from app.services.firestore_client import get_firestore_db
 from app.services.llm_price_predictor import predict_price
+from app.services.llm_price_predictor_gemini import predict_price_gemini
+from app.services.llm_price_predictor_gemini_raw import predict_price_gemini_raw
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +93,7 @@ async def predict_price_endpoint(target: TargetVehicleSchema):
             ],
         }
 
-        result = await asyncio.to_thread(predict_price, target_dict)
+        result = await asyncio.to_thread(predict_price_gemini, target_dict)
 
         logger.info(
             "가격 예측 완료 — 소매: %.0f만, 낙찰: %.0f만, 신뢰도: %s, 분석: %d건 (tokens: %d+%d)",
@@ -224,7 +227,7 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             ],
         }
 
-        result = predict_price(target_dict)
+        result = predict_price_gemini(target_dict)
 
         logger.info(
             "비동기 가격 예측 완료 — vehicle_id=%s, 소매: %.0f만, 낙찰: %.0f만",
@@ -274,3 +277,131 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             })
         except Exception:
             logger.exception("Firestore 에러 업데이트 실패")
+
+
+# ── 멀티 모델 동시 예측 (모델 개발용) ──
+
+
+class ModelResult(BaseModel):
+    model_id: str
+    model_name: str
+    elapsed_ms: int = 0
+    error: str | None = None
+    estimated_auction: float = 0
+    estimated_auction_export: float = 0
+    estimated_retail: float = 0
+    confidence: str = ""
+    reasoning: str = ""
+    auction_reasoning: str = ""
+    retail_reasoning: str = ""
+    export_reasoning: str = ""
+    factors: list[PriceFactorResponse] = []
+    auction_factors: list[PriceFactorResponse] = []
+    retail_factors: list[PriceFactorResponse] = []
+    comparable_summary: str = ""
+    key_comparables: list[str] = []
+    vehicles_analyzed: int = 0
+    auction_stats: PriceStatsResponse | None = None
+    retail_stats: PriceStatsResponse | None = None
+
+
+class MultiModelResponse(BaseModel):
+    results: list[ModelResult]
+
+
+def _result_to_model_result(
+    model_id: str, model_name: str, result, elapsed_ms: int,
+) -> ModelResult:
+    def _to_stats(s) -> PriceStatsResponse | None:
+        if not s:
+            return None
+        return PriceStatsResponse(
+            count=s.get("count", 0),
+            mean=s.get("mean", 0),
+            median=s.get("median", 0),
+            min=s.get("min", 0),
+            max=s.get("max", 0),
+            std=s.get("std", 0),
+        )
+
+    return ModelResult(
+        model_id=model_id,
+        model_name=model_name,
+        elapsed_ms=elapsed_ms,
+        estimated_auction=result.estimated_auction,
+        estimated_auction_export=result.estimated_auction_export,
+        estimated_retail=result.estimated_retail,
+        confidence=result.confidence,
+        reasoning=result.reasoning,
+        auction_reasoning=result.auction_reasoning,
+        retail_reasoning=result.retail_reasoning,
+        export_reasoning=result.export_reasoning,
+        factors=[PriceFactorResponse(**f) for f in result.factors],
+        auction_factors=[PriceFactorResponse(**f) for f in result.auction_factors],
+        retail_factors=[PriceFactorResponse(**f) for f in result.retail_factors],
+        comparable_summary=result.comparable_summary,
+        key_comparables=result.key_comparables,
+        vehicles_analyzed=result.vehicles_analyzed,
+        auction_stats=_to_stats(result.auction_stats),
+        retail_stats=_to_stats(result.retail_stats),
+    )
+
+
+@router.post("/predict-price-multi", response_model=MultiModelResponse)
+async def predict_price_multi_endpoint(target: TargetVehicleSchema):
+    """
+    멀티 모델 동시 가격 예측 (모델 개발용).
+
+    i1(Claude+시장데이터)과 i2(Gemini LLM순수)를 동시에 실행하여 비교.
+    """
+    target_dict = {
+        "maker": target.maker,
+        "model": target.model,
+        "year": target.year,
+        "mileage": target.mileage,
+        "fuel": target.fuel,
+        "trim": target.trim,
+        "color": target.color,
+        "options": target.options,
+        "exchange_count": target.exchange_count,
+        "bodywork_count": target.bodywork_count,
+        "generation": target.generation,
+        "factory_price": target.factory_price,
+        "base_price": target.base_price,
+        "part_damages": [
+            {"part": pd.part, "damage_type": pd.damage_type}
+            for pd in target.part_damages
+        ],
+    }
+
+    async def _run_i2():
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.to_thread(predict_price_gemini, target_dict)
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return _result_to_model_result("i2", "Gemini + 시장데이터", result, elapsed)
+        except Exception as e:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            logger.exception("[i2] 예측 오류")
+            return ModelResult(
+                model_id="i2", model_name="Gemini + 시장데이터",
+                elapsed_ms=elapsed, error=str(e),
+            )
+
+    async def _run_i3():
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.to_thread(predict_price_gemini_raw, target_dict)
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return _result_to_model_result("i3", "Gemini LLM (Raw)", result, elapsed)
+        except Exception as e:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            logger.exception("[i3] 예측 오류")
+            return ModelResult(
+                model_id="i3", model_name="Gemini LLM (Raw)",
+                elapsed_ms=elapsed, error=str(e),
+            )
+
+    i2_result, i3_result = await asyncio.gather(_run_i2(), _run_i3())
+
+    return MultiModelResponse(results=[i2_result, i3_result])

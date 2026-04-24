@@ -221,6 +221,35 @@ export interface PricePredictionResponse {
   retail_stats: PriceStats;
 }
 
+// === 멀티 모델 예측 (모델 개발용) ===
+
+export interface ModelResult {
+  model_id: string;
+  model_name: string;
+  elapsed_ms: number;
+  error?: string | null;
+  estimated_auction: number;
+  estimated_auction_export: number;
+  estimated_retail: number;
+  confidence: string;
+  reasoning: string;
+  auction_reasoning: string;
+  retail_reasoning: string;
+  export_reasoning: string;
+  factors: PriceFactor[];
+  auction_factors: PriceFactor[];
+  retail_factors: PriceFactor[];
+  comparable_summary: string;
+  key_comparables: string[];
+  vehicles_analyzed: number;
+  auction_stats: PriceStats;
+  retail_stats: PriceStats;
+}
+
+export interface MultiModelResponse {
+  results: ModelResult[];
+}
+
 // === Taxonomy 타입 ===
 
 export interface ModelInfo {

@@ -6,16 +6,18 @@ import type {
   FilterOptions,
   CalculateResponse,
   PricePredictionResponse,
+  MultiModelResponse,
   AnalyzeCriteriaResponse,
   PricingCriteria,
 } from "../types";
 import { COMPANY_TABS } from "../types";
-import { searchAuction, calculateWithCriteria, analyzeCriteria, predictPrice, submitFeedback } from "../api/client";
+import { searchAuction, calculateWithCriteria, analyzeCriteria, predictPrice, predictPriceMulti, submitFeedback } from "../api/client";
 import AuctionCard from "./AuctionCard";
 import type { CalcState } from "./AuctionCard";
 import CriteriaPanel from "./CriteriaPanel";
 import PriceDetailModal from "./PriceDetailModal";
 import PricePredictionModal from "./PricePredictionModal";
+import MultiModelComparisonModal from "./MultiModelComparisonModal";
 import DeleteModal from "./DeleteModal";
 
 // === TabData ===
@@ -151,6 +153,16 @@ export default function SearchResult({ target, onBack }: Props) {
     calc: CalculateResponse;
   } | null>(null);
 
+  // 모델 개발 모드 (URL ?modelDev=1 또는 localStorage)
+  const [modelDevMode] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("modelDev") === "1") {
+      localStorage.setItem("carfarm_modelDev", "1");
+      return true;
+    }
+    return localStorage.getItem("carfarm_modelDev") === "1";
+  });
+
   // AI 가격 예측
   const [predictionState, setPredictionState] = useState<{
     status: "idle" | "loading" | "done" | "error";
@@ -158,6 +170,14 @@ export default function SearchResult({ target, onBack }: Props) {
     error?: string;
   }>({ status: "idle" });
   const [showPredictionModal, setShowPredictionModal] = useState(false);
+
+  // 멀티 모델 예측 (모델 개발 모드)
+  const [multiModelState, setMultiModelState] = useState<{
+    status: "idle" | "loading" | "done" | "error";
+    data?: MultiModelResponse;
+    error?: string;
+  }>({ status: "idle" });
+  const [showMultiModelModal, setShowMultiModelModal] = useState(false);
 
   // 보정 기준 분석
   const [criteriaState, setCriteriaState] = useState<{
@@ -169,16 +189,53 @@ export default function SearchResult({ target, onBack }: Props) {
   const [currentCriteria, setCurrentCriteria] = useState<PricingCriteria | null>(null);
 
   const handlePredictPrice = async () => {
-    setPredictionState({ status: "loading" });
-    try {
-      const result = await predictPrice(target);
-      setPredictionState({ status: "done", data: result });
-      setShowPredictionModal(true);
-    } catch (err) {
-      setPredictionState({
-        status: "error",
-        error: err instanceof Error ? err.message : "예측 실패",
-      });
+    if (modelDevMode) {
+      // 모델 개발 모드: 모든 모델 동시 실행
+      setPredictionState({ status: "loading" });
+      setMultiModelState({ status: "loading" });
+      try {
+        const result = await predictPriceMulti(target);
+        setMultiModelState({ status: "done", data: result });
+        // i1 결과를 기본 prediction으로도 설정
+        const i1 = result.results.find((r) => r.model_id === "i1");
+        if (i1 && !i1.error) {
+          setPredictionState({
+            status: "done",
+            data: {
+              estimated_auction: i1.estimated_auction,
+              estimated_retail: i1.estimated_retail,
+              confidence: i1.confidence,
+              reasoning: i1.reasoning,
+              factors: i1.factors,
+              comparable_summary: i1.comparable_summary,
+              key_comparables: i1.key_comparables,
+              vehicles_analyzed: i1.vehicles_analyzed,
+              auction_stats: i1.auction_stats,
+              retail_stats: i1.retail_stats,
+            },
+          });
+        } else {
+          setPredictionState({ status: "done" });
+        }
+        setShowMultiModelModal(true);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "예측 실패";
+        setPredictionState({ status: "error", error: msg });
+        setMultiModelState({ status: "error", error: msg });
+      }
+    } else {
+      // 일반 모드: i1만 실행
+      setPredictionState({ status: "loading" });
+      try {
+        const result = await predictPrice(target);
+        setPredictionState({ status: "done", data: result });
+        setShowPredictionModal(true);
+      } catch (err) {
+        setPredictionState({
+          status: "error",
+          error: err instanceof Error ? err.message : "예측 실패",
+        });
+      }
     }
   };
 
@@ -428,26 +485,38 @@ export default function SearchResult({ target, onBack }: Props) {
           {predictionState.status === "idle" && (
             <button
               onClick={handlePredictPrice}
-              className="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-sm"
+              className={`text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-sm ${
+                modelDevMode
+                  ? "bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600"
+                  : "bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700"
+              }`}
             >
-              AI 가격 예측
+              {modelDevMode ? "AI 가격 예측 (모델 비교)" : "AI 가격 예측"}
             </button>
           )}
           {predictionState.status === "loading" && (
-            <span className="flex items-center gap-2 text-xs text-purple-600 font-medium">
+            <span className={`flex items-center gap-2 text-xs font-medium ${modelDevMode ? "text-orange-600" : "text-purple-600"}`}>
               <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              AI 분석 중...
+              {modelDevMode ? "모델 비교 분석 중..." : "AI 분석 중..."}
             </span>
           )}
-          {predictionState.status === "done" && predictionState.data && (
+          {predictionState.status === "done" && predictionState.data && !modelDevMode && (
             <button
               onClick={() => setShowPredictionModal(true)}
               className="bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm flex items-center gap-2"
             >
               <span>예상 낙찰가 {predictionState.data.estimated_auction.toLocaleString()}만</span>
+            </button>
+          )}
+          {(predictionState.status === "done" || multiModelState.status === "done") && modelDevMode && (
+            <button
+              onClick={() => setShowMultiModelModal(true)}
+              className="bg-gradient-to-r from-rose-500 to-orange-500 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm flex items-center gap-2"
+            >
+              <span>모델 비교 결과 보기</span>
             </button>
           )}
           {predictionState.status === "error" && (
@@ -752,6 +821,15 @@ export default function SearchResult({ target, onBack }: Props) {
           target={target}
           data={predictionState.data}
           onClose={() => setShowPredictionModal(false)}
+        />
+      )}
+
+      {/* 멀티 모델 비교 모달 */}
+      {showMultiModelModal && multiModelState.data && (
+        <MultiModelComparisonModal
+          target={target}
+          data={multiModelState.data}
+          onClose={() => setShowMultiModelModal(false)}
         />
       )}
 

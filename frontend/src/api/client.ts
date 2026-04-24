@@ -6,6 +6,7 @@ import type {
   SearchAuctionResponse,
   PricePredictionResponse,
   AnalyzeCriteriaResponse,
+  MultiModelResponse,
   ModelInfo,
   GenerationInfo,
   VariantInfo,
@@ -90,6 +91,17 @@ export async function predictPrice(
   target: TargetVehicle
 ): Promise<PricePredictionResponse> {
   return request<PricePredictionResponse>("/predict-price", {
+    method: "POST",
+    body: JSON.stringify(target),
+  });
+}
+
+// === 멀티 모델 AI 가격 예측 (모델 개발용) ===
+
+export async function predictPriceMulti(
+  target: TargetVehicle
+): Promise<MultiModelResponse> {
+  return request<MultiModelResponse>("/predict-price-multi", {
     method: "POST",
     body: JSON.stringify(target),
   });
