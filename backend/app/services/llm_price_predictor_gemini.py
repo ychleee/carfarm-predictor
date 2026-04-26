@@ -1,168 +1,66 @@
 """
-CarFarm i2 모델 — Gemini API 기반 가격 예측 서비스
+CarFarm i2 모델 — Gemini + 시장 데이터 보정
 
-i1 모델(Claude)과 동일한 데이터 수집/프롬프트를 사용하되 LLM만 Gemini로 교체.
-Isaac 프로젝트의 기존 Gemini API 키를 사용.
+공통 데이터 수집(gemini_shared)을 사용하고,
+시장 데이터 보정(retail_estimator)을 적용하여 최종 가격을 산출.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import re
-
-from google import genai
 
 from app.services.llm_price_predictor import (
-    SYSTEM_PROMPT,
     PricePrediction,
-    _fetch_comparable_vehicles,
-    _build_user_message,
-    _to_man_won,
     _compact_auction_vehicle,
     _compact_retail_vehicle,
+    _estimate_export_from_domestic,
+)
+from app.services.gemini_shared import (
+    CollectedData,
+    GeminiLLMResult,
+    collect_data,
+    call_gemini_llm,
 )
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_MODEL = "gemini-2.5-flash"
-_gemini_client: genai.Client | None = None
-
-
-def _get_client() -> genai.Client:
-    """Gemini API 클라이언트 (싱글톤)"""
-    global _gemini_client
-    if _gemini_client is not None:
-        return _gemini_client
-
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
-
-    _gemini_client = genai.Client(api_key=api_key)
-    logger.info("[i2/Gemini] 클라이언트 초기화 완료 — model=%s", _GEMINI_MODEL)
-    return _gemini_client
-
-
-def _parse_prediction(text: str) -> dict:
-    """LLM 응답에서 JSON 추출"""
-    json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-    if json_match:
-        text = json_match.group(1)
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        text = brace_match.group(0)
-    return json.loads(text)
-
 
 def predict_price_gemini(target: dict) -> PricePrediction:
     """
-    Gemini API 기반 가격 예측 (i2 모델).
+    Gemini API 기반 가격 예측 (i2 모델) — 단독 호출용.
 
-    i1과 동일한 데이터 수집 + 프롬프트 → Gemini API 호출.
-    시장 데이터 보정(retail_estimator)은 적용하지 않고 LLM 순수 결과만 반환.
+    데이터 수집 + Gemini 호출 + 시장 데이터 보정을 모두 수행.
     """
-    # 1) 데이터 수집 (i1과 동일)
-    auction_vehicles, retail_vehicles, auction_stats_raw, retail_stats_raw = (
-        _fetch_comparable_vehicles(target)
-    )
+    data = collect_data(target)
+    if data.total_vehicles == 0:
+        return _empty_result(data, "[i2]")
 
-    def _normalize_stats(s: dict) -> dict:
-        if s.get("count", 0) == 0:
-            return s
-        out = dict(s)
-        for k in ("mean", "median", "min", "max", "std"):
-            if k in out:
-                out[k] = _to_man_won(out[k])
-        return out
+    llm_result = call_gemini_llm(data.user_message)
+    return build_i2_result(target, data, llm_result)
 
-    auction_stats = _normalize_stats(auction_stats_raw)
-    retail_stats = _normalize_stats(retail_stats_raw)
 
-    total_vehicles = len(auction_vehicles) + len(retail_vehicles)
-    logger.info(
-        "[i2/Gemini] 데이터 수집 — 낙찰: %d건, 소매: %d건",
-        len(auction_vehicles), len(retail_vehicles),
-    )
+def build_i2_result(
+    target: dict,
+    data: CollectedData,
+    llm_result: GeminiLLMResult,
+) -> PricePrediction:
+    """
+    i2 후처리 — LLM 결과에 시장 데이터 보정을 적용.
 
-    if total_vehicles == 0:
+    멀티 모델 엔드포인트에서 공유된 데이터/LLM 결과를 받아 처리할 때도 사용.
+    """
+    parsed = llm_result.parsed
+    if not parsed:
         return PricePrediction(
             estimated_auction=0,
             estimated_retail=0,
             confidence="낮음",
-            reasoning="[i2] 유사 차량 데이터를 찾을 수 없어 가격 예측이 불가합니다.",
-            vehicles_analyzed=0,
-            auction_stats=auction_stats,
-            retail_stats=retail_stats,
-        )
-
-    # 2) 프롬프트 생성 (i1과 동일)
-    user_message = _build_user_message(
-        target, auction_vehicles, retail_vehicles,
-        auction_stats, retail_stats,
-    )
-
-    # 3) Gemini API 호출
-    client = _get_client()
-    response = client.models.generate_content(
-        model=_GEMINI_MODEL,
-        contents=user_message,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0,
-            max_output_tokens=8192,
-            response_mime_type="application/json",
-            thinking_config=genai.types.ThinkingConfig(thinking_budget=0),
-        ),
-    )
-
-    input_tokens = response.usage_metadata.prompt_token_count if response.usage_metadata else 0
-    output_tokens = response.usage_metadata.candidates_token_count if response.usage_metadata else 0
-    logger.info("[i2/Gemini] API — tokens: %d+%d", input_tokens, output_tokens)
-
-    # 4) 응답 파싱
-    try:
-        raw_text = response.text
-    except Exception as e:
-        logger.warning("[i2/Gemini] response.text 접근 실패: %s", e)
-        raw_text = ""
-
-    if not raw_text:
-        return PricePrediction(
-            estimated_auction=0,
-            estimated_retail=0,
-            confidence="낮음",
-            reasoning="[i2] Gemini 응답이 비어있습니다.",
-            vehicles_analyzed=total_vehicles,
-            auction_stats=auction_stats,
-            retail_stats=retail_stats,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
-
-    try:
-        # response_mime_type=application/json → 순수 JSON
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
-        # 폴백: 마크다운 코드펜스 등에서 JSON 추출
-        try:
-            parsed = _parse_prediction(raw_text)
-        except Exception:
-            parsed = None
-
-    if not parsed or not isinstance(parsed, dict):
-        logger.warning("[i2/Gemini] JSON 파싱 실패. 원본(앞 300자): %s", raw_text[:300])
-        return PricePrediction(
-            estimated_auction=0,
-            estimated_retail=0,
-            confidence="낮음",
-            reasoning=f"[i2] Gemini 응답 파싱 실패. 원본: {raw_text[:500]}",
-            vehicles_analyzed=total_vehicles,
-            auction_stats=auction_stats,
-            retail_stats=retail_stats,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            reasoning=f"[i2] Gemini 응답 파싱 실패. 원본: {llm_result.raw_text[:500]}",
+            vehicles_analyzed=data.total_vehicles,
+            auction_stats=data.auction_stats,
+            retail_stats=data.retail_stats,
+            input_tokens=llm_result.input_tokens,
+            output_tokens=llm_result.output_tokens,
         )
 
     # LLM 결과 보관
@@ -175,17 +73,16 @@ def predict_price_gemini(target: dict) -> PricePrediction:
 
     # 최근 수출 낙찰일
     export_dates = [
-        v.get("개최일", "") for v in auction_vehicles if v.get("is_export")
+        v.get("개최일", "") for v in data.auction_vehicles if v.get("is_export")
     ]
     last_export_date = max(export_dates) if export_dates else ""
 
-    # ── 시장 데이터 보정 (i1과 동일) ──
+    # ── 시장 데이터 보정 ──
     from app.services.retail_estimator import (
         estimate_retail_by_market,
         estimate_auction_by_market,
         estimate_export_auction_by_market,
     )
-    from app.services.llm_price_predictor import _estimate_export_from_domestic
 
     target_fuel = target.get("fuel", "") or ""
     market_auction_result = estimate_auction_by_market(
@@ -304,12 +201,12 @@ def predict_price_gemini(target: dict) -> PricePrediction:
     if market_auction_all:
         compact_auction = [_compact_auction_vehicle(v) for v in market_auction_all]
     else:
-        compact_auction = [_compact_auction_vehicle(v) for v in auction_vehicles[:20]]
+        compact_auction = [_compact_auction_vehicle(v) for v in data.auction_vehicles[:20]]
 
     if market_retail_result.vehicles:
         compact_retail = [_compact_retail_vehicle(v) for v in market_retail_result.vehicles]
     else:
-        compact_retail = [_compact_retail_vehicle(v) for v in retail_vehicles[:15]]
+        compact_retail = [_compact_retail_vehicle(v) for v in data.retail_vehicles[:15]]
 
     market_total = len(compact_auction) + len(compact_retail)
 
@@ -328,14 +225,26 @@ def predict_price_gemini(target: dict) -> PricePrediction:
         retail_factors=retail_factors,
         comparable_summary=parsed.get("comparable_summary", ""),
         key_comparables=parsed.get("key_comparables", []),
-        vehicles_analyzed=market_total if market_total > 0 else total_vehicles,
-        auction_stats=auction_stats,
-        retail_stats=retail_stats,
+        vehicles_analyzed=market_total if market_total > 0 else data.total_vehicles,
+        auction_stats=data.auction_stats,
+        retail_stats=data.retail_stats,
         comparable_auction_vehicles=compact_auction,
         comparable_retail_vehicles=compact_retail,
         retail_brackets=retail_brackets,
         auction_brackets=auction_brackets,
         export_brackets=export_brackets,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=llm_result.input_tokens,
+        output_tokens=llm_result.output_tokens,
+    )
+
+
+def _empty_result(data: CollectedData, prefix: str) -> PricePrediction:
+    return PricePrediction(
+        estimated_auction=0,
+        estimated_retail=0,
+        confidence="낮음",
+        reasoning=f"{prefix} 유사 차량 데이터를 찾을 수 없어 가격 예측이 불가합니다.",
+        vehicles_analyzed=0,
+        auction_stats=data.auction_stats,
+        retail_stats=data.retail_stats,
     )

@@ -240,6 +240,17 @@ def _similarity_score(target: dict, vehicle: dict) -> float:
         elif diff_km <= 50000:
             score += 5
 
+    # 영업용/택시/렌터카 매칭 — 용도 유사 차량 우선
+    _commercial_keywords = ("영업", "택시", "렌터카", "렌트", "법인")
+    t_trim_lower = (target.get("trim") or "").lower()
+    v_trim_lower = (vehicle.get("trim") or vehicle.get("트림") or "").lower()
+    t_is_commercial = any(kw in t_trim_lower for kw in _commercial_keywords)
+    v_is_commercial = any(kw in v_trim_lower for kw in _commercial_keywords)
+    if t_is_commercial and v_is_commercial:
+        score += 25  # 같은 용도 차량 우선
+    elif t_is_commercial != v_is_commercial:
+        score -= 10  # 용도 불일치 페널티
+
     # 색상 일치
     t_color = (target.get("color") or "").strip()
     v_color = (vehicle.get("색상") or "").strip()
@@ -357,10 +368,12 @@ def _fetch_comparable_vehicles(target: dict) -> tuple[list[dict], list[dict], di
             trim = remaining or None
             logger.info("모델↔트림 보정: model=%s, trim=%s", model, trim)
 
-    # 같은 연식 → ±1 → ±2 → ±3 자동 확대
+    # 같은 연식 → ±1 → ±2 → ±3 (고주행 시 ±5) 자동 확대
+    target_mileage = target.get("mileage", 0) or 0
+    max_year_delta = 5 if target_mileage > 200000 else 3
     auction_raw: list[dict] = []
     retail_raw: list[dict] = []
-    for y_delta in (0, 1, 2, 3):
+    for y_delta in range(0, max_year_delta + 1):
         y_min = year - y_delta
         y_max = year + y_delta
         auction_raw = search_auction_db(
@@ -381,7 +394,7 @@ def _fetch_comparable_vehicles(target: dict) -> tuple[list[dict], list[dict], di
     if trim and len(auction_raw) + len(retail_raw) < 3:
         logger.info("트림 '%s' 매칭 결과 부족 (%d건) → 트림 없이 재검색",
                      trim, len(auction_raw) + len(retail_raw))
-        for y_delta in (0, 1, 2, 3):
+        for y_delta in range(0, max_year_delta + 1):
             y_min = year - y_delta
             y_max = year + y_delta
             auction_raw = search_auction_db(
@@ -596,6 +609,31 @@ def _build_user_message(
     # 대상차량은 AA등급(무사고) 가정
     target_info += "- 검차상태: AA등급 (무사고 가정)\n"
 
+    # 데이터 범위 경고 (고주행 차량)
+    target_mileage = target.get("mileage", 0) or 0
+    data_gap_warning = ""
+    if auction_vehicles or retail_vehicles:
+        all_mileages = []
+        for v in auction_vehicles:
+            m = v.get("주행거리", 0)
+            if m:
+                all_mileages.append(m)
+        for v in retail_vehicles:
+            m = v.get("주행거리", 0)
+            if m:
+                all_mileages.append(m)
+        if all_mileages:
+            max_data_km = max(all_mileages)
+            gap_km = target_mileage - max_data_km
+            if gap_km > 50000:
+                data_gap_warning = (
+                    f"\n\n⚠️ **주의: 대상차량 주행거리({target_mileage:,}km)가 "
+                    f"비교 데이터 범위(최대 {max_data_km:,}km)를 {gap_km:,}km 초과합니다.**\n"
+                    f"주행거리 차이만큼 추가 감가를 반드시 적용하세요. "
+                    f"고주행(20만km+) 차량은 시장 수요가 급감하여 "
+                    f"km당 감가율이 일반 구간보다 1.5~2배 가속됩니다.\n"
+                )
+
     return (
         f"{target_info}\n"
         f"## 시세 통계 (최근 3개월)\n"
@@ -605,6 +643,7 @@ def _build_user_message(
         f"{_format_auction_table(auction_vehicles)}\n\n"
         f"## 소매가 유사차량 ({len(retail_vehicles)}건)\n"
         f"{_format_retail_table(retail_vehicles)}\n\n"
+        f"{data_gap_warning}"
         f"위 데이터를 분석하여 대상차량의 적정 낙찰가와 소매가를 추론해주세요.\n"
         f"출고가/기본가 정보를 반드시 반영하세요. 대상차량은 AA등급(무사고)으로 간주하므로 사고이력 감가는 적용하지 마세요.\n"
         f"**소매가는 반드시 소매가 유사차량의 실제 매물가를 기반으로 산정하세요.**\n"

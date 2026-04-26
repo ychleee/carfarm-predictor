@@ -17,8 +17,10 @@ from pydantic import BaseModel
 from app.schemas.vehicle import TargetVehicleSchema
 from app.services.firestore_client import get_firestore_db
 from app.services.llm_price_predictor import predict_price
-from app.services.llm_price_predictor_gemini import predict_price_gemini
-from app.services.llm_price_predictor_gemini_raw import predict_price_gemini_raw
+from app.services.llm_price_predictor_gemini import predict_price_gemini, build_i2_result
+from app.services.llm_price_predictor_gemini_raw import predict_price_gemini_raw, build_i3_result
+from app.services.gemini_shared import collect_data, call_gemini_llm
+from app.services.ml_price_predictor import predict_price_ml
 
 logger = logging.getLogger(__name__)
 
@@ -236,8 +238,33 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             result.estimated_auction,
         )
 
+        # i3(ML) 모델도 함께 실행
+        i3_data = {}
+        try:
+            ml_result = predict_price_ml(target_dict)
+            i3_data = {
+                "i3EstimatedAuction": _safe_float(ml_result.estimated_auction),
+                "i3EstimatedAuctionExport": _safe_float(ml_result.estimated_auction_export),
+                "i3EstimatedRetail": _safe_float(ml_result.estimated_retail),
+                "i3Confidence": ml_result.confidence,
+                "i3AuctionReasoning": ml_result.auction_reasoning,
+                "i3RetailReasoning": ml_result.retail_reasoning,
+                "i3ExportReasoning": ml_result.export_reasoning,
+                "i3AuctionBrackets": ml_result.auction_brackets,
+                "i3ExportBrackets": ml_result.export_brackets,
+                "i3RetailBrackets": ml_result.retail_brackets,
+            }
+            logger.info(
+                "i3(ML) 예측 완료 — vehicle_id=%s, 소매: %.0f만, 낙찰: %.0f만",
+                vehicle_id,
+                ml_result.estimated_retail,
+                ml_result.estimated_auction,
+            )
+        except Exception as ml_err:
+            logger.warning("i3(ML) 예측 실패 — vehicle_id=%s: %s", vehicle_id, ml_err)
+
         # Firestore에 결과 저장
-        doc_ref.update({
+        update_data = {
             "status": "done",
             "color": target.color or "",
             "factoryPrice": _safe_float(target.factory_price),
@@ -265,7 +292,9 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
             "exportBrackets": result.export_brackets,
             "updatedAt": SERVER_TIMESTAMP,
             "error": None,
-        })
+        }
+        update_data.update(i3_data)
+        doc_ref.update(update_data)
 
     except Exception as e:
         logger.exception("비동기 가격 예측 오류 — vehicle_id=%s", vehicle_id)
@@ -282,7 +311,21 @@ def _run_prediction_sync(target: TargetVehicleSchema, vehicle_id: str, doc_ref):
 # ── 멀티 모델 동시 예측 (모델 개발용) ──
 
 
+class CommonDataResponse(BaseModel):
+    """모델 공통 데이터 — 수집된 유사차량 + 통계 + 가격추이"""
+    comparable_auction_vehicles: list[dict] = []
+    comparable_retail_vehicles: list[dict] = []
+    auction_stats: PriceStatsResponse | None = None
+    retail_stats: PriceStatsResponse | None = None
+    vehicles_analyzed: int = 0
+    last_export_date: str = ""
+    auction_brackets: list[dict] = []
+    export_brackets: list[dict] = []
+    retail_brackets: list[dict] = []
+
+
 class ModelResult(BaseModel):
+    """모델별 결과 — 산출방식 + 추정비율 + 가격"""
     model_id: str
     model_name: str
     elapsed_ms: int = 0
@@ -300,30 +343,19 @@ class ModelResult(BaseModel):
     retail_factors: list[PriceFactorResponse] = []
     comparable_summary: str = ""
     key_comparables: list[str] = []
-    vehicles_analyzed: int = 0
-    auction_stats: PriceStatsResponse | None = None
-    retail_stats: PriceStatsResponse | None = None
+    retail_brackets: list[dict] = []
+    auction_brackets: list[dict] = []
+    export_brackets: list[dict] = []
 
 
 class MultiModelResponse(BaseModel):
+    common_data: CommonDataResponse
     results: list[ModelResult]
 
 
 def _result_to_model_result(
     model_id: str, model_name: str, result, elapsed_ms: int,
 ) -> ModelResult:
-    def _to_stats(s) -> PriceStatsResponse | None:
-        if not s:
-            return None
-        return PriceStatsResponse(
-            count=s.get("count", 0),
-            mean=s.get("mean", 0),
-            median=s.get("median", 0),
-            min=s.get("min", 0),
-            max=s.get("max", 0),
-            std=s.get("std", 0),
-        )
-
     return ModelResult(
         model_id=model_id,
         model_name=model_name,
@@ -341,9 +373,9 @@ def _result_to_model_result(
         retail_factors=[PriceFactorResponse(**f) for f in result.retail_factors],
         comparable_summary=result.comparable_summary,
         key_comparables=result.key_comparables,
-        vehicles_analyzed=result.vehicles_analyzed,
-        auction_stats=_to_stats(result.auction_stats),
-        retail_stats=_to_stats(result.retail_stats),
+        retail_brackets=result.retail_brackets,
+        auction_brackets=result.auction_brackets,
+        export_brackets=result.export_brackets,
     )
 
 
@@ -352,7 +384,9 @@ async def predict_price_multi_endpoint(target: TargetVehicleSchema):
     """
     멀티 모델 동시 가격 예측 (모델 개발용).
 
-    i1(Claude+시장데이터)과 i2(Gemini LLM순수)를 동시에 실행하여 비교.
+    1) 공통 데이터 수집 (Firestore 유사차량) → common_data
+    2) i2: Gemini LLM + 시장데이터 보정 → 산출방식/가격
+    3) i3: ML 모델 (LightGBM) → 산출방식/가격
     """
     target_dict = {
         "maker": target.maker,
@@ -374,34 +408,95 @@ async def predict_price_multi_endpoint(target: TargetVehicleSchema):
         ],
     }
 
+    # 1) 공통 데이터 수집
+    from app.services.llm_price_predictor import (
+        _compact_auction_vehicle,
+        _compact_retail_vehicle,
+    )
+
+    data = await asyncio.to_thread(collect_data, target_dict)
+
+    compact_auction = [_compact_auction_vehicle(v) for v in data.auction_vehicles[:20]]
+    compact_retail = [_compact_retail_vehicle(v) for v in data.retail_vehicles[:15]]
+
+    export_dates = [
+        v.get("개최일", "") for v in data.auction_vehicles if v.get("is_export")
+    ]
+    last_export_date = max(export_dates) if export_dates else ""
+
+    def _to_stats(s) -> PriceStatsResponse | None:
+        if not s or s.get("count", 0) == 0:
+            return None
+        return PriceStatsResponse(
+            count=s.get("count", 0),
+            mean=s.get("mean", 0),
+            median=s.get("median", 0),
+            min=s.get("min", 0),
+            max=s.get("max", 0),
+            std=s.get("std", 0),
+        )
+
+    common_data = CommonDataResponse(
+        comparable_auction_vehicles=compact_auction,
+        comparable_retail_vehicles=compact_retail,
+        auction_stats=_to_stats(data.auction_stats),
+        retail_stats=_to_stats(data.retail_stats),
+        vehicles_analyzed=data.total_vehicles,
+        last_export_date=last_export_date,
+    )
+
+    # 2) i2: Gemini + 시장데이터 (수집된 data 재사용)
+    # 3) i3: ML 모델 (data 불필요, 독립 실행)
+
     async def _run_i2():
-        t0 = time.monotonic()
+        t_start = time.monotonic()
         try:
-            result = await asyncio.to_thread(predict_price_gemini, target_dict)
-            elapsed = int((time.monotonic() - t0) * 1000)
+            if data.total_vehicles == 0:
+                return ModelResult(
+                    model_id="i2", model_name="Gemini + 시장데이터",
+                    error="유사 차량 데이터를 찾을 수 없어 가격 예측이 불가합니다.",
+                )
+            llm_result = await asyncio.to_thread(call_gemini_llm, data.user_message)
+            result = await asyncio.to_thread(build_i2_result, target_dict, data, llm_result)
+            elapsed = int((time.monotonic() - t_start) * 1000)
             return _result_to_model_result("i2", "Gemini + 시장데이터", result, elapsed)
         except Exception as e:
-            elapsed = int((time.monotonic() - t0) * 1000)
-            logger.exception("[i2] 예측 오류")
+            elapsed = int((time.monotonic() - t_start) * 1000)
+            logger.exception("[i2] 오류")
             return ModelResult(
                 model_id="i2", model_name="Gemini + 시장데이터",
                 elapsed_ms=elapsed, error=str(e),
             )
 
     async def _run_i3():
-        t0 = time.monotonic()
+        t_start = time.monotonic()
         try:
-            result = await asyncio.to_thread(predict_price_gemini_raw, target_dict)
-            elapsed = int((time.monotonic() - t0) * 1000)
-            return _result_to_model_result("i3", "Gemini LLM (Raw)", result, elapsed)
+            result = await asyncio.to_thread(predict_price_ml, target_dict)
+            elapsed = int((time.monotonic() - t_start) * 1000)
+            return _result_to_model_result("i3", "ML 모델 (LightGBM)", result, elapsed)
         except Exception as e:
-            elapsed = int((time.monotonic() - t0) * 1000)
-            logger.exception("[i3] 예측 오류")
+            elapsed = int((time.monotonic() - t_start) * 1000)
+            logger.exception("[i3-ML] 오류")
             return ModelResult(
-                model_id="i3", model_name="Gemini LLM (Raw)",
+                model_id="i3", model_name="ML 모델 (LightGBM)",
                 elapsed_ms=elapsed, error=str(e),
             )
 
     i2_result, i3_result = await asyncio.gather(_run_i2(), _run_i3())
 
-    return MultiModelResponse(results=[i2_result, i3_result])
+    # i2의 시장데이터 brackets을 공통 가격추이로 사용
+    if not i2_result.error:
+        common_data = common_data.model_copy(update={
+            "auction_brackets": i2_result.auction_brackets,
+            "export_brackets": i2_result.export_brackets,
+            "retail_brackets": i2_result.retail_brackets,
+        })
+
+    logger.info(
+        "[multi] i2: 낙찰=%s, 소매=%s / i3: 낙찰=%s, 소매=%s / 공통 %d건",
+        i2_result.estimated_auction, i2_result.estimated_retail,
+        i3_result.estimated_auction, i3_result.estimated_retail,
+        common_data.vehicles_analyzed,
+    )
+
+    return MultiModelResponse(common_data=common_data, results=[i2_result, i3_result])

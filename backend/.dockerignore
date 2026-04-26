@@ -4,3 +4,6 @@ __pycache__/
 .git/
 .idea/
 *.egg-info/
+data/auction_training.json
+data/retail_training.json
+scripts/

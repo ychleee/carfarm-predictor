@@ -626,10 +626,11 @@ def _mileage_depreciation_rate(
             base = 10.0 / max(price_manwon, 100) if price_manwon > 0 else 0.01
 
     # 고주행거리 가속 (시장 수요 감소·위험 증가)
+    # 지수 감쇠와 함께 사용되므로 완만한 가속 (지수 감쇠 자체가 누적 가속 효과)
     if target_mileage > 200000:
-        base *= 1.8
+        base *= 1.2
     elif target_mileage > 150000:
-        base *= 1.5
+        base *= 1.15
     return base
 
 
@@ -1153,6 +1154,25 @@ def _smooth_price_estimate(
 
             lower_residual = lower_r_sum / lower_w_sum if lower_w_sum > 0 else 0
             price = base_price + lower_residual
+
+            # ── 데이터 범위 초과 감가 보정 ──
+            # 가중치가 있어도 target이 데이터 최대 주행거리를 크게 초과하면
+            # 가중 평균만으로는 부족 → 지수 감쇠 추가 감가 적용
+            max_mileage_in_data = max(fmileages)
+            mileage_gap = target_mileage - max_mileage_in_data
+            if mileage_gap > 50000 and vehicle_year > 0:
+                current_year = datetime.now().year
+                gap_age = current_year - vehicle_year
+                gap_rate = _mileage_depreciation_rate(gap_age, price, target_mileage)
+                # 250k+ 가속은 갭 보정에서는 적용하지 않음 (이미 rate에 200k+ 가속 포함)
+                gap_units = mileage_gap / 10000
+                # 지수 감쇠: (1 - rate)^units (선형보다 안정적)
+                gap_adjusted = price * ((1 - gap_rate) ** gap_units)
+                gap_adjusted = max(gap_adjusted, price * 0.25)  # 최저 25% 바닥
+                print(f"  [보수-갭보정] price={price:.1f}, gap={mileage_gap/10000:.1f}만km, rate={gap_rate:.4f}, exp_mult={(1-gap_rate)**gap_units:.3f} → {gap_adjusted:.1f}")
+                price = gap_adjusted
+                far_range = True  # 갭 보정 적용 시 blend에서 smooth 우선
+
             print(f"  [보수] reg={reg_price:.1f}, w_mean={w_mean:.1f}, base={base_price:.1f}, lower_resid={lower_residual:.1f} → {price:.1f}")
         else:
             # 가중치 전부 0 (타겟이 데이터 범위 훨씬 밖) → 전체 데이터 균등 회귀 + 비즈니스 외삽
@@ -1180,20 +1200,67 @@ def _smooth_price_estimate(
                 current_year = datetime.now().year
                 age = current_year - vehicle_year
                 rate = _mileage_depreciation_rate(age, start_price, target_mileage)
-                # 원거리 외삽: 25만km+ 추가 가속 (bracket 보간 영향 없이 여기서만 적용)
-                if target_mileage > 250000:
-                    rate *= 1.30
                 extra_units = (target_mileage - max_mileage_in_data) / 10000
-                extrap_price = start_price * (1 - rate * extra_units)
-                price = max(extrap_price, start_price * 0.3)
+                # 지수 감쇠: (1 - rate)^units — 선형보다 안정적, 극단 외삽에서 과도한 감가 방지
+                exp_mult = (1 - rate) ** extra_units
+                extrap_price = start_price * exp_mult
+                price = max(extrap_price, start_price * 0.25)
             else:
+                extra_units = 0
                 price = max(a_intercept + b_slope * float(target_mileage), eff_min * 0.3)
             far_range = True
-            print(f"  [원거리외삽] start={start_price:.1f}(eff_min={eff_min:.1f}, reg@bnd={reg_at_boundary:.1f}), max_km={max_mileage_in_data}, rate={rate:.3f} → {price:.1f}")
+            print(f"  [원거리외삽] start={start_price:.1f}(eff_min={eff_min:.1f}, reg@bnd={reg_at_boundary:.1f}), max_km={max_mileage_in_data}, rate={rate:.4f}, exp_mult={(1-rate)**extra_units:.3f} → {price:.1f}")
     else:
-        price = _weighted_local_regression(
-            [float(m) for m in mileages], prices, weights, float(target_mileage),
-        )
+        # 비보수적(소매) 경로: 가중 회귀 + 원거리 외삽 처리
+        w_sum = sum(dist_weights)
+        if w_sum > 0:
+            price = _weighted_local_regression(
+                [float(m) for m in mileages], prices, weights, float(target_mileage),
+            )
+            # 데이터 범위 초과 감가 보정 (보수적 경로와 동일 로직)
+            fmileages = [float(m) for m in mileages]
+            max_mileage_in_data = max(fmileages)
+            mileage_gap = target_mileage - max_mileage_in_data
+            if mileage_gap > 50000 and vehicle_year > 0:
+                current_year = datetime.now().year
+                gap_age = current_year - vehicle_year
+                gap_rate = _mileage_depreciation_rate(gap_age, price if price > 0 else sum(prices)/len(prices), target_mileage)
+                gap_units = mileage_gap / 10000
+                w_mean = sum(w * p for w, p in zip(dist_weights, prices)) / w_sum
+                gap_adjusted = w_mean * ((1 - gap_rate) ** gap_units)
+                gap_adjusted = max(gap_adjusted, w_mean * 0.25)
+                print(f"  [소매-갭보정] w_mean={w_mean:.1f}, gap={mileage_gap/10000:.1f}만km, rate={gap_rate:.4f} → {gap_adjusted:.1f}")
+                price = gap_adjusted
+                far_range = True  # 갭 보정 적용 시 blend에서 smooth 우선
+        else:
+            # 가중치 전부 0 → 전체 데이터 균등 회귀 + 비즈니스 외삽
+            fmileages = [float(m) for m in mileages]
+            n = len(fmileages)
+            wx = sum(fmileages)
+            wy = sum(prices)
+            wxx = sum(x * x for x in fmileages)
+            wxy = sum(x * p for x, p in zip(fmileages, prices))
+            denom = n * wxx - wx ** 2
+            if abs(denom) < 1e-10:
+                a_intercept = wy / n
+            else:
+                b_slope = (n * wxy - wx * wy) / denom
+                a_intercept = (wy - b_slope * wx) / n
+            max_mileage_in_data = max(mileages)
+            eff_min = min(prices)
+            reg_at_boundary = a_intercept + b_slope * float(max_mileage_in_data) if abs(denom) >= 1e-10 else a_intercept
+            start_price = max(reg_at_boundary, eff_min)
+            if vehicle_year > 0 and target_mileage > max_mileage_in_data:
+                current_year = datetime.now().year
+                age = current_year - vehicle_year
+                rate = _mileage_depreciation_rate(age, start_price, target_mileage)
+                extra_units = (target_mileage - max_mileage_in_data) / 10000
+                price = start_price * ((1 - rate) ** extra_units)
+                price = max(price, start_price * 0.25)
+            else:
+                price = max(a_intercept + b_slope * float(target_mileage) if abs(denom) >= 1e-10 else a_intercept, eff_min * 0.3)
+            far_range = True
+            print(f"  [소매-원거리외삽] start={start_price:.1f}, max_km={max_mileage_in_data}, rate={rate:.4f} → {price:.1f}")
 
     # 과외삽 방지: 회귀 결과를 유효 데이터 범위로 제한
     max_w = max(weights) if weights else 0
@@ -1214,9 +1281,9 @@ def _smooth_price_estimate(
                     age = current_year - vehicle_year
                     rate = _mileage_depreciation_rate(age, eff_min, target_mileage)
                     if target_mileage > max_mileage_in_data:
-                        # 완전 외삽: 비즈니스 기준 감가율로 eff_min에서 추가 하락
+                        # 완전 외삽: 지수 감쇠로 eff_min에서 추가 하락
                         extra_units = (target_mileage - max_mileage_in_data) / 10000
-                        extrap_price = eff_min * (1 - rate * extra_units)
+                        extrap_price = eff_min * ((1 - rate) ** extra_units)
                         if extra_units > 5:
                             # 긴 외삽(>5만km): 회귀 결과 신뢰 낮음 → 비즈니스 기준 우선
                             price = max(extrap_price, eff_min * 0.3)
@@ -2044,15 +2111,31 @@ def estimate_retail_by_market(
         logger.info("소매가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (연식 확장 없음)
+    # 같은 트림 + 같은 연식 + 같은 연료 → 부족 시 트림 없이 + 연식 확대
     year_range_used = f"{year}년"
     vehicles = search_retail_db(
         model=model, maker=maker, trim=trim, fuel=fuel,
         year_min=year, year_max=year, limit=500,
     )
-    result.year_range_used = year_range_used
     vehicles = _remove_same_as_factory(vehicles, price_field="소매가")
 
+    # 트림 매칭 실패 시 폴백: 트림 없이 + 연식 ±1 확대
+    if len(vehicles) < MIN_TOTAL_VEHICLES:
+        logger.info(
+            "소매가 추정: 정확 트림(%s) 부족 %d건 → 트림 없이 재검색",
+            trim, len(vehicles),
+        )
+        for y_delta in (0, 1, 2):
+            vehicles = search_retail_db(
+                model=model, maker=maker, trim=None, fuel=fuel,
+                year_min=year - y_delta, year_max=year + y_delta, limit=500,
+            )
+            vehicles = _remove_same_as_factory(vehicles, price_field="소매가")
+            if len(vehicles) >= MIN_TOTAL_VEHICLES:
+                year_range_used = f"{year-y_delta}~{year+y_delta}년"
+                break
+
+    result.year_range_used = year_range_used
     result.vehicles_found = len(vehicles)
     logger.info(
         "소매가 추정: %s %s %s %s fuel=%s — %d건",
@@ -2133,8 +2216,19 @@ def estimate_retail_by_market(
 
         # blend: 비율 보간과 평활 가격 (둘 다 유효할 때)
         # 서브모델 혼재(fp CV > 10%) 시 smooth에 가중치 증가 (fp 정규화 반영)
-        # 단, 원거리 외삽(far_range)은 bracket 보간보다 신뢰도 낮으므로 blend 제외
-        if ratio_price > 0 and smooth_price > 0 and smooth_method != "smooth_price_far_range":
+        if smooth_method == "smooth_price_far_range" and smooth_price > 0:
+            # 원거리 외삽: 비즈니스 룰 기반 smooth가 bracket 외삽보다 안정적
+            est_price = _round10(smooth_price)
+            result.estimated_retail = est_price
+            result.estimated_ratio = round(smooth_price / tgt_ref_price * 100, 1) if tgt_ref_price > 0 else 0
+            result.method = "smooth_price_far_range"
+            result.success = True
+            print(f"  [소매 far_range] smooth={smooth_price:.1f}, ratio={ratio_price:.1f} → smooth 우선 {est_price}")
+            logger.info(
+                "소매 원거리외삽: smooth=%.1f, ratio=%.1f → smooth 우선 %d",
+                smooth_price, ratio_price, est_price,
+            )
+        elif ratio_price > 0 and smooth_price > 0 and smooth_method != "smooth_price_far_range":
             # fp 변동 계수로 서브모델 혼재 정도 측정
             fp_values = [float(v.get("factory_price", 0) or 0) for v in calc_vehicles if float(v.get("factory_price", 0) or 0) > 0]
             fp_cv = (statistics.stdev(fp_values) / statistics.mean(fp_values)) if len(fp_values) >= 2 and statistics.mean(fp_values) > 0 else 0
@@ -2346,16 +2440,33 @@ def estimate_auction_by_market(
         logger.info("낙찰가 추정 스킵: 트림 없음")
         return result
 
-    # 같은 트림 + 같은 연식 + 같은 연료만 사용 (연식 확장 없음)
+    # 같은 트림 + 같은 연식 + 같은 연료 → 부족 시 트림 없이 + 연식 확대
     year_range_used = f"{year}년"
     vehicles = search_auction_db(
         model=model, maker=maker, trim=trim, fuel=fuel,
         year_min=year, year_max=year, limit=500,
         domestic_only=True,
     )
-    result.year_range_used = year_range_used
     vehicles = _remove_same_as_factory(vehicles, price_field="낙찰가")
 
+    # 트림 매칭 실패 시 폴백: 트림 없이 + 연식 ±1 확대
+    if len(vehicles) < MIN_TOTAL_VEHICLES:
+        logger.info(
+            "낙찰가 추정: 정확 트림(%s) 부족 %d건 → 트림 없이 재검색",
+            trim, len(vehicles),
+        )
+        for y_delta in (0, 1, 2):
+            vehicles = search_auction_db(
+                model=model, maker=maker, trim=None, fuel=fuel,
+                year_min=year - y_delta, year_max=year + y_delta, limit=500,
+                domestic_only=True,
+            )
+            vehicles = _remove_same_as_factory(vehicles, price_field="낙찰가")
+            if len(vehicles) >= MIN_TOTAL_VEHICLES:
+                year_range_used = f"{year-y_delta}~{year+y_delta}년"
+                break
+
+    result.year_range_used = year_range_used
     result.vehicles_found = len(vehicles)
     result.vehicles = vehicles
     logger.info(
@@ -2462,6 +2573,7 @@ def estimate_auction_by_market(
             result.estimated_ratio = round(smooth_price / tgt_ref_price * 100, 1)
         result.method = smooth_method
         result.success = True
+        print(f"  [낙찰 far_range] smooth={smooth_price:.1f}, ratio={ratio_price:.1f} → smooth 우선 {result.estimated_auction}")
     elif ratio_price > 0:
         result.estimated_auction = _round10(ratio_price)
         if tgt_ref_price > 0:
