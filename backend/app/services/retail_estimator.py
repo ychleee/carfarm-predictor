@@ -729,27 +729,32 @@ def _filter_gap_outliers(
     # — 데이터가 적을 때 과도한 제거 방지
     min_keep = max(math.ceil(len(priced) * 2 / 3), 3)
 
-    # 하단 gap 제거
-    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) > min_keep:
+    # 상단/하단 중 gap이 더 큰 쪽부터 번갈아 제거
+    # — 기존: 하단 먼저 전부 제거 → min_keep 도달 → 상단 이상치 제거 불가 버그 방지
+    while True:
         active = [(i, p) for i, p in priced if i not in excluded_indices]
         if len(active) <= min_keep:
-            break
-        lowest_idx, lowest_p = active[0]
-        next_p = active[1][1]
-        if next_p > 0 and (next_p - lowest_p) / next_p >= gap_pct:
-            excluded_indices.add(lowest_idx)
-        else:
             break
 
-    # 상단 gap 제거
-    while len(priced) - len([i for i, _ in priced if i in excluded_indices]) > min_keep:
-        active = [(i, p) for i, p in priced if i not in excluded_indices]
-        if len(active) <= min_keep:
-            break
+        # 하단 gap
+        lowest_idx, lowest_p = active[0]
+        next_p = active[1][1]
+        low_gap = (next_p - lowest_p) / next_p if next_p > 0 else 0
+
+        # 상단 gap
         highest_idx, highest_p = active[-1]
         prev_p = active[-2][1]
-        if prev_p > 0 and (highest_p - prev_p) / highest_p >= gap_pct:
+        high_gap = (highest_p - prev_p) / highest_p if highest_p > 0 else 0
+
+        # 둘 다 gap_pct 미만이면 종료
+        if low_gap < gap_pct and high_gap < gap_pct:
+            break
+
+        # gap이 더 큰 쪽 제거 (동률이면 상단 우선 — 고가 이상치가 더 위험)
+        if high_gap >= low_gap and high_gap >= gap_pct:
             excluded_indices.add(highest_idx)
+        elif low_gap >= gap_pct:
+            excluded_indices.add(lowest_idx)
         else:
             break
 
@@ -1367,18 +1372,24 @@ def _build_brackets(
         else:
             v_retail_aa = v_retail
 
-        b.prices.append(v_retail_aa)
-        b.mileages.append(v_mileage)
-
         # 비율 계산: 차량 자체 출고가 기준만 사용
         # fp=0 차량은 다른 서브모델일 수 있어 비율 계산에서 제외
         v_fp = float(v.get("factory_price", 0) or 0)
         if v_fp > 0:
             ratio = v_retail_aa / v_fp
-            if ratio < 1.0:  # 비율 >= 100% 는 비정상 데이터 제외
-                b.ratios.append(ratio)
-                if _is_clean_vehicle(v):
-                    clean_ratios_map[key].append(ratio)
+            if ratio >= 1.0:
+                # 비율 >= 100% 는 비정상 데이터 — 가격·비율 모두 제외
+                logger.debug(
+                    "비율≥100%% 제외: %dkm, price=%.0f, fp=%.0f, ratio=%.2f",
+                    v_mileage, v_retail_aa, v_fp, ratio,
+                )
+                continue
+            b.ratios.append(ratio)
+            if _is_clean_vehicle(v):
+                clean_ratios_map[key].append(ratio)
+
+        b.prices.append(v_retail_aa)
+        b.mileages.append(v_mileage)
 
     # 이상치 필터링 + effective_ratio 결정
     # 10년 이내: 항상 하위 20%, 그 외: CV 기반 조건부
@@ -1426,7 +1437,15 @@ def _build_brackets(
         if use_ratios:
             b.effective_ratio = b.median_ratio
         elif tgt_ref_price > 0 and b.median_price > 0:
-            b.effective_ratio = b.median_price / tgt_ref_price
+            fallback_ratio = b.median_price / tgt_ref_price
+            if fallback_ratio >= 1.0:
+                logger.warning(
+                    "소매 가격 폴백 비율 이상: %d~%dkm median=%.0f, ref=%.0f → ratio=%.2f ≥ 1.0 — 구간 무효화",
+                    b.bracket_start, b.bracket_end, b.median_price, tgt_ref_price, fallback_ratio,
+                )
+                b.effective_ratio = 0
+                continue
+            b.effective_ratio = fallback_ratio
             b.smoothed = True
 
     _smooth_cross_bin_outliers(brackets)
@@ -2349,18 +2368,24 @@ def _build_auction_brackets(
         else:
             v_auction_aa = v_auction
 
-        b.prices.append(v_auction_aa)
-        b.mileages.append(v_mileage)
-
         # 비율 계산: 차량 자체 출고가 기준만 사용
         # fp=0 차량은 다른 서브모델일 수 있어 비율 계산에서 제외
         v_fp = float(v.get("factory_price", 0) or 0)
         if v_fp > 0:
             ratio = v_auction_aa / v_fp
-            if ratio < 1.0:  # 비율 >= 100% 는 비정상 데이터 제외
-                b.ratios.append(ratio)
-                if _is_clean_vehicle(v):
-                    clean_ratios_map[key].append(ratio)
+            if ratio >= 1.0:
+                # 비율 >= 100% 는 비정상 데이터 — 가격·비율 모두 제외
+                logger.debug(
+                    "낙찰 비율≥100%% 제외: %dkm, price=%.0f, fp=%.0f, ratio=%.2f",
+                    v_mileage, v_auction_aa, v_fp, ratio,
+                )
+                continue
+            b.ratios.append(ratio)
+            if _is_clean_vehicle(v):
+                clean_ratios_map[key].append(ratio)
+
+        b.prices.append(v_auction_aa)
+        b.mileages.append(v_mileage)
 
     # 이상치 필터링 + effective_ratio 결정
     # 10년 이내: 하위 25%, 그 외: 하위 40%
@@ -2395,7 +2420,15 @@ def _build_auction_brackets(
         if use_ratios:
             b.effective_ratio = b.median_ratio
         elif tgt_ref_price > 0 and b.median_price > 0:
-            b.effective_ratio = b.median_price / tgt_ref_price
+            fallback_ratio = b.median_price / tgt_ref_price
+            if fallback_ratio >= 1.0:
+                logger.warning(
+                    "낙찰 가격 폴백 비율 이상: %d~%dkm median=%.0f, ref=%.0f → ratio=%.2f ≥ 1.0 — 구간 무효화",
+                    b.bracket_start, b.bracket_end, b.median_price, tgt_ref_price, fallback_ratio,
+                )
+                b.effective_ratio = 0
+                continue
+            b.effective_ratio = fallback_ratio
             b.smoothed = True
 
     _smooth_cross_bin_outliers(brackets)
