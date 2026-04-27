@@ -2227,6 +2227,7 @@ def estimate_retail_by_market(
             target_year=year, tgt_ref_price=tgt_ref_price,
         )
         smooth_price = 0.0
+        smooth_method = ""
         if price_data:
             price_data = _filter_local_outliers(price_data)
             smooth_price, smooth_method = _smooth_price_estimate(
