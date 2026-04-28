@@ -202,11 +202,42 @@ def _generate_ml_brackets(
     return auction_brackets, export_brackets, retail_brackets
 
 
+def _blend_with_market(
+    ml_value: float,
+    market_value: float,
+    market_success: bool,
+    market_vehicles: int,
+) -> tuple[float, float, float]:
+    """ML 예측값과 시장 데이터 추정값을 블렌딩.
+
+    시장 데이터가 있으면 시장 데이터를 우선하고,
+    차량 수에 따라 시장 데이터 가중치를 높인다.
+
+    Returns:
+        (blended_value, market_weight, ml_weight)
+    """
+    if not market_success or market_value <= 0:
+        return ml_value, 0.0, 1.0
+
+    # 시장 데이터 차량 수에 따른 가중치: 3건=0.8, 6건=0.85, 10건+=0.9
+    if market_vehicles >= 10:
+        market_w = 0.9
+    elif market_vehicles >= 6:
+        market_w = 0.85
+    else:
+        market_w = 0.8
+
+    ml_w = 1.0 - market_w
+    blended = round((market_value * market_w + ml_value * ml_w) / 10) * 10
+    return blended, market_w, ml_w
+
+
 def predict_price_ml(target: dict) -> PricePrediction:
     """
     ML 모델 기반 가격 예측 (i3).
 
     출고가 대비 비율을 예측하고, 출고가를 곱해서 최종 가격 산출.
+    시장 데이터가 있으면 블렌딩하여 보정.
     """
     factory_price = target.get("factory_price", 0) or 0
     base_price = target.get("base_price", 0) or 0
@@ -234,21 +265,105 @@ def predict_price_ml(target: dict) -> PricePrediction:
         # 낙찰(내수) 예측
         domestic_bundle = _get_auction_domestic_model()
         domestic_ratio = domestic_bundle["model"].predict(features_df)[0]
-        estimated_auction = round(domestic_ratio * ref_price / 10) * 10
+        ml_auction = round(domestic_ratio * ref_price / 10) * 10
 
         # 낙찰(수출) 예측
         export_bundle = _get_auction_export_model()
         export_ratio = export_bundle["model"].predict(features_df)[0]
-        estimated_auction_export = round(export_ratio * ref_price / 10) * 10
+        ml_auction_export = round(export_ratio * ref_price / 10) * 10
 
         # 소매 예측
         retail_bundle = _get_retail_model()
         retail_ratio = retail_bundle["model"].predict(features_df)[0]
-        estimated_retail = round(retail_ratio * ref_price / 10) * 10
+        ml_retail = round(retail_ratio * ref_price / 10) * 10
 
-        print(f"[ML result] domestic={domestic_ratio:.4f}({estimated_auction}), "
-              f"export={export_ratio:.4f}({estimated_auction_export}), "
-              f"retail={retail_ratio:.4f}({estimated_retail})")
+        print(f"[ML raw] domestic={domestic_ratio:.4f}({ml_auction}), "
+              f"export={export_ratio:.4f}({ml_auction_export}), "
+              f"retail={retail_ratio:.4f}({ml_retail})")
+
+        # ── 시장 데이터 블렌딩 ──
+        maker = target.get("maker", "")
+        model_name = target.get("model", "")
+        trim = target.get("trim", "") or ""
+        year = target.get("year", 0) or 0
+        mileage = target.get("mileage", 0) or 0
+        fuel = target.get("fuel", "")
+
+        market_blend_info: list[str] = []
+
+        try:
+            from app.services.retail_estimator import (
+                estimate_retail_by_market,
+                estimate_auction_by_market,
+                estimate_export_auction_by_market,
+            )
+
+            # 낙찰(내수) 시장 데이터
+            mkt_auction = estimate_auction_by_market(
+                maker=maker, model=model_name, trim=trim, year=year,
+                mileage=mileage, factory_price=factory_price,
+                base_price=base_price, fuel=fuel,
+            )
+            estimated_auction, aw_mkt, aw_ml = _blend_with_market(
+                ml_auction, mkt_auction.estimated_auction,
+                mkt_auction.success, mkt_auction.vehicles_found,
+            )
+            if aw_mkt > 0:
+                market_blend_info.append(
+                    f"내수 블렌딩: ML {ml_auction:,.0f}만({aw_ml:.0%}) + "
+                    f"시장 {mkt_auction.estimated_auction:,.0f}만({aw_mkt:.0%}, {mkt_auction.vehicles_found}건) "
+                    f"→ {estimated_auction:,.0f}만"
+                )
+            else:
+                market_blend_info.append(f"내수: 시장데이터 없음 → ML {ml_auction:,.0f}만 사용")
+
+            # 수출 시장 데이터
+            mkt_export = estimate_export_auction_by_market(
+                maker=maker, model=model_name, trim=trim, year=year,
+                mileage=mileage, factory_price=factory_price,
+                base_price=base_price, fuel=fuel,
+            )
+            estimated_auction_export, ew_mkt, ew_ml = _blend_with_market(
+                ml_auction_export, mkt_export.estimated_auction,
+                mkt_export.success, mkt_export.vehicles_found,
+            )
+            if ew_mkt > 0:
+                market_blend_info.append(
+                    f"수출 블렌딩: ML {ml_auction_export:,.0f}만({ew_ml:.0%}) + "
+                    f"시장 {mkt_export.estimated_auction:,.0f}만({ew_mkt:.0%}, {mkt_export.vehicles_found}건) "
+                    f"→ {estimated_auction_export:,.0f}만"
+                )
+
+            # 소매 시장 데이터
+            mkt_retail = estimate_retail_by_market(
+                maker=maker, model=model_name, trim=trim, year=year,
+                mileage=mileage, factory_price=factory_price,
+                base_price=base_price, fuel=fuel,
+            )
+            estimated_retail, rw_mkt, rw_ml = _blend_with_market(
+                ml_retail, mkt_retail.estimated_retail,
+                mkt_retail.success, mkt_retail.vehicles_found,
+            )
+            if rw_mkt > 0:
+                market_blend_info.append(
+                    f"소매 블렌딩: ML {ml_retail:,.0f}만({rw_ml:.0%}) + "
+                    f"시장 {mkt_retail.estimated_retail:,.0f}만({rw_mkt:.0%}, {mkt_retail.vehicles_found}건) "
+                    f"→ {estimated_retail:,.0f}만"
+                )
+            else:
+                market_blend_info.append(f"소매: 시장데이터 없음 → ML {ml_retail:,.0f}만 사용")
+
+        except Exception as mkt_err:
+            logger.warning("[ML] 시장 데이터 블렌딩 실패: %s", mkt_err)
+            estimated_auction = ml_auction
+            estimated_auction_export = ml_auction_export
+            estimated_retail = ml_retail
+            market_blend_info.append(f"시장데이터 조회 실패 → ML 단독 사용")
+
+        print(f"[ML blended] auction={estimated_auction}, "
+              f"export={estimated_auction_export}, retail={estimated_retail}")
+        for info in market_blend_info:
+            print(f"  {info}")
 
         # 정합성: 낙찰(내수) < 소매
         if estimated_auction >= estimated_retail * 0.97:
@@ -258,9 +373,6 @@ def predict_price_ml(target: dict) -> PricePrediction:
         estimated_auction = max(estimated_auction, 0)
         estimated_auction_export = max(estimated_auction_export, 0)
         estimated_retail = max(estimated_retail, 0)
-
-        year = target.get("year", 0) or 0
-        mileage = target.get("mileage", 0) or 0
 
         domestic_metrics = domestic_bundle.get("metrics", {})
         export_metrics = export_bundle.get("metrics", {})
@@ -273,11 +385,13 @@ def predict_price_ml(target: dict) -> PricePrediction:
         elif year < CURRENT_YEAR - 10 or mileage > 250000:
             confidence = "낮음"
 
+        blend_text = "\n".join(market_blend_info)
         reasoning = (
-            f"[i3-ML] LightGBM 모델 기반 예측\n"
+            f"[i3-ML] LightGBM + 시장데이터 블렌딩\n"
             f"출고가 {ref_price:,.0f}만원 대비 "
             f"내수 {domestic_ratio*100:.1f}%, 수출 {export_ratio*100:.1f}%, "
-            f"소매 {retail_ratio*100:.1f}%\n"
+            f"소매 {retail_ratio*100:.1f}% (ML raw)\n"
+            f"{blend_text}\n"
             f"학습: 내수 {domestic_metrics.get('train_size', 0):,}건, "
             f"수출 {export_metrics.get('train_size', 0):,}건, "
             f"소매 {retail_metrics.get('train_size', 0):,}건"
@@ -298,16 +412,16 @@ def predict_price_ml(target: dict) -> PricePrediction:
             return "\n".join(lines)
 
         auction_reasoning = (
-            f"[ML 내수] 출고가 {ref_price:,.0f}만 × {domestic_ratio*100:.1f}% = "
-            f"{estimated_auction:,.0f}만원 (MAPE {domestic_metrics.get('mape', 0):.1f}%)"
+            f"[ML+시장] 출고가 {ref_price:,.0f}만 × {domestic_ratio*100:.1f}% = "
+            f"ML {ml_auction:,.0f}만 → 블렌딩 {estimated_auction:,.0f}만원"
         )
         export_reasoning = (
-            f"[ML 수출] 출고가 {ref_price:,.0f}만 × {export_ratio*100:.1f}% = "
-            f"{estimated_auction_export:,.0f}만원 (MAPE {export_metrics.get('mape', 0):.1f}%)"
+            f"[ML+시장] 출고가 {ref_price:,.0f}만 × {export_ratio*100:.1f}% = "
+            f"ML {ml_auction_export:,.0f}만 → 블렌딩 {estimated_auction_export:,.0f}만원"
         )
         retail_reasoning = (
-            f"[ML 소매] 출고가 {ref_price:,.0f}만 × {retail_ratio*100:.1f}% = "
-            f"{estimated_retail:,.0f}만원 (MAPE {retail_metrics.get('mape', 0):.1f}%)"
+            f"[ML+시장] 출고가 {ref_price:,.0f}만 × {retail_ratio*100:.1f}% = "
+            f"ML {ml_retail:,.0f}만 → 블렌딩 {estimated_retail:,.0f}만원"
         )
 
         return PricePrediction(
